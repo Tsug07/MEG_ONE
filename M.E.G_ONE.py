@@ -356,7 +356,7 @@ class ExcelGeneratorApp:
                     image = Image.open(logo_path)
                     # Redimensiona o logo para um tamanho compacto
                     image = image.resize((32, 32), Image.Resampling.LANCZOS)
-                    return ctk.CTkImage(light_image=image, dark_image=image, size=(32, 32))
+                    return ctk.CTkImage(light_image=image, dark_image=image, size=(80, 80))
             
             print("Nenhum logo encontrado nos formatos suportados")
             return None
@@ -717,7 +717,7 @@ def main():
     
      # Adiciona ícone se estiver disponível
     try:
-        icon_path = os.path.join(os.path.dirname(__file__), "logo.ico")
+        icon_path = os.path.join(os.path.dirname(__file__), "logoIcon.ico")
         if os.path.exists(icon_path):
             root.iconbitmap(icon_path)
     except Exception as e:
