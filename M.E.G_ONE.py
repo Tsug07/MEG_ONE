@@ -714,6 +714,15 @@ class ExcelGeneratorApp:
 
 def main():
     root = ctk.CTk()
+    
+     # Adiciona ícone se estiver disponível
+    try:
+        icon_path = os.path.join(os.path.dirname(__file__), "logo.ico")
+        if os.path.exists(icon_path):
+            root.iconbitmap(icon_path)
+    except Exception as e:
+        print(f"Erro ao definir ícone: {e}")
+        
     app = ExcelGeneratorApp(root)
     root.mainloop()
 
