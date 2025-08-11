@@ -1,5 +1,6 @@
 import os
 import re
+import sys
 import pandas as pd
 import pdfplumber
 import openpyxl
@@ -186,49 +187,55 @@ def processar_renovacao(excel_base, excel_entrada, excel_saida, log_callback, pr
     contatos_dict = carregar_contatos_excel(excel_entrada)
     log_callback("Lendo Excel Base...")
     progress_callback(0.2)
-    
-    # CORREÇÃO: Log do dicionário de contatos para debug
-    log_callback(f"Debug - Contatos carregados: {len(contatos_dict)} registros")
-    log_callback(f"Debug - Primeiros 3 códigos do dicionário: {list(contatos_dict.keys())[:3]}")
-    
+
     df_comparacao = pd.read_excel(excel_base)
     codigos = df_comparacao.iloc[:, 0]
     pessoas = df_comparacao.iloc[:, 1]
-    
+    vencimentos = df_comparacao.iloc[:, 2]
+
     dados = {}
+    hoje = datetime.now()
+
     progress_callback(0.4)
     log_callback("Comparando códigos e criando resultados...")
-    for codigo_atual, pessoa in zip(codigos, pessoas):
-        codigo_atual = limpar_codigo(codigo_atual)  # CORREÇÃO AQUI
-        log_callback(f"Debug - Código do Excel Base: '{codigo_atual}' (tipo: {type(codigo_atual)})")
-        
-        # CORREÇÃO: Debug para verificar busca no dicionário
-        contato_info = contatos_dict.get(codigo_atual, {})
-        log_callback(f"Debug - Buscando código '{codigo_atual}' no dicionário: {contato_info}")
-        
+
+    for codigo_atual, pessoa, vencimento in zip(codigos, pessoas, vencimentos):
+        codigo_str = limpar_codigo(codigo_atual)
+
+        # Filtrar apenas contratos que ainda não venceram
+        if pd.isna(vencimento) or not isinstance(vencimento, (pd.Timestamp, datetime)):
+            continue
+        if vencimento < hoje:
+            continue
+
+        contato_info = contatos_dict.get(codigo_str, {})
         contato_individual = contato_info.get('contato', '')
         contato_grupo = contato_info.get('grupo', '')
-        
-        if codigo_atual not in dados:
-            dados[codigo_atual] = []
-        dados[codigo_atual].append({
-            'Código': codigo_atual,
-            'Empresa': pessoa,
+
+        vencimento_str = vencimento.strftime("%d/%m/%Y")
+
+        if codigo_str not in dados:
+            dados[codigo_str] = []
+        dados[codigo_str].append({
+            'Codigo': codigo_str,
             'Contato Onvio': contato_individual,
-            'Grupo Onvio': contato_grupo
+            'Grupo Onvio': contato_grupo,
+            'Nome': pessoa,
+            'Vencimento': vencimento_str
         })
-    
+
     linhas = []
     for codigo, info_list in dados.items():
         for info in info_list:
             linhas.append(info)
-    
+
     progress_callback(0.8)
     log_callback("Salvando arquivo Excel de saída...")
     df = pd.DataFrame(linhas)
     df.to_excel(excel_saida, index=False)
     log_callback(f"Arquivo Excel gerado com sucesso: {excel_saida}")
     return len(linhas)
+
 
 def formatar_cnpj(cnpj):
     cnpj_str = re.sub(r'\D', '', str(cnpj))
@@ -321,6 +328,16 @@ processadores = {
     "ComuniCertificado": processar_comunicado
 }
 
+def get_resource_path(relative_path):
+        """Retorna o caminho absoluto para arquivos, lidando com PyInstaller"""
+        try:
+            # PyInstaller cria uma pasta temporária e armazena o caminho em _MEIPASS
+            base_path = sys._MEIPASS
+        except Exception:
+            base_path = os.path.abspath(".")
+
+        return os.path.join(base_path, relative_path)
+    
 class ExcelGeneratorApp:
     def __init__(self, root):
         self.root = root
@@ -335,35 +352,24 @@ class ExcelGeneratorApp:
         self.modelo = ""
         
         self.setup_ui()
-        
+      
+    
+  
     def load_logo(self):
-        """Carrega o logo se existir, procurando no diretório atual"""
+        """Carrega o logo se existir"""
         try:
-            # Obtém o diretório onde o script está sendo executado
-            script_dir = os.path.dirname(os.path.abspath(__file__))
-            
-            # Lista de possíveis nomes e extensões para o logo
-            logo_files = [
-                "logo.png", "logo.jpg", "logo.jpeg", "logo.ico", "logo.gif",
-                "Logo.png", "Logo.jpg", "Logo.jpeg", "Logo.ico", "Logo.gif",
-                "LOGO.png", "LOGO.jpg", "LOGO.jpeg", "LOGO.ico", "LOGO.gif"
-            ]
-            
-            for logo_file in logo_files:
-                logo_path = os.path.join(script_dir, logo_file)
-                if os.path.exists(logo_path):
-                    print(f"Logo encontrado: {logo_path}")
-                    image = Image.open(logo_path)
-                    # Redimensiona o logo para um tamanho compacto
-                    image = image.resize((32, 32), Image.Resampling.LANCZOS)
-                    return ctk.CTkImage(light_image=image, dark_image=image, size=(80, 80))
-            
-            print("Nenhum logo encontrado nos formatos suportados")
-            return None
-            
+            logo_path = get_resource_path("logo.png")  # pode ser .jpg também
+            if os.path.exists(logo_path):
+                image = Image.open(logo_path)
+                image = image.resize((32, 32), Image.Resampling.LANCZOS)
+                return ctk.CTkImage(light_image=image, dark_image=image, size=(80, 80))
+            else:
+                print("Logo não encontrado.")
+                return None
         except Exception as e:
             print(f"Erro ao carregar logo: {e}")
             return None
+
         
     def setup_ui(self):
         # Container principal compacto
@@ -717,11 +723,17 @@ def main():
     
      # Adiciona ícone se estiver disponível
     try:
-        icon_path = os.path.join(os.path.dirname(__file__), "logoIcon.ico")
+        def get_resource_path(relative_path):
+            try:
+                return os.path.join(sys._MEIPASS, relative_path)
+            except:
+                return os.path.join(os.path.abspath("."), relative_path)
+
+        icon_path = get_resource_path("logoIcon.ico")
         if os.path.exists(icon_path):
-            root.iconbitmap(icon_path)
+            root.wm_iconbitmap(icon_path)
     except Exception as e:
-        print(f"Erro ao definir ícone: {e}")
+        print(f"Erro ao definir ícone da interface: {e}")
         
     app = ExcelGeneratorApp(root)
     root.mainloop()
