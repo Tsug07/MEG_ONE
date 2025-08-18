@@ -320,12 +320,67 @@ def processar_comunicado(excel_base, excel_entrada, excel_saida, log_callback, p
     log_callback(f"Arquivo Excel gerado com sucesso: {excel_saida}")
     return len(linhas)
 
+
+def processar_dombot(excel_base, excel_entrada, excel_saida, log_callback, progress_callback, periodo=""):
+    # Nota: Este modelo não usa excel_entrada (Contatos Onvio), pois não utiliza contatos ou grupos
+    log_callback("Lendo Excel Base...")
+    progress_callback(0.2)
+    
+    # Ler o Excel base, sheet específica
+    df = pd.read_excel(excel_base, sheet_name="DP - GMS")
+    
+    # Renomear colunas para padronização
+    df.columns = ['Nº', 'EMPRESAS', 'Tarefa']  # Ignorar a terceira coluna
+    
+    # Converter 'Nº' para string e limpar
+    df['Nº'] = df['Nº'].apply(limpar_codigo)
+    
+    # Remover duplicatas baseadas em 'Nº' e 'EMPRESAS'
+    df = df.drop_duplicates(subset=['Nº', 'EMPRESAS'])
+    
+    progress_callback(0.4)
+    log_callback(f"Registros únicos encontrados: {len(df)}")
+    
+    # Obter Periodo e Competencia baseados no período fornecido ou data atual
+    if periodo:
+        try:
+            mes, ano = periodo.split('/')
+            periodo = f"{mes}/{ano}"
+            competencia = f"{mes}{ano}"
+            log_callback(f"Usando período customizado: {periodo}")
+        except:
+            raise ValueError("Formato de período inválido. Use MM/YYYY.")
+    else:
+        agora = datetime.now()
+        periodo = agora.strftime("%m/%Y")
+        competencia = agora.strftime("%m%Y")
+        log_callback("Usando período atual (fallback)")
+    
+    # Adicionar colunas
+    df['Periodo'] = periodo
+    df['Competencia'] = competencia
+    df['Salvar Como'] = df['Nº'] + '-' + df['EMPRESAS'] + '-' + df['Competencia']
+    df['Caminho'] = df['Salvar Como'].apply(
+    lambda x: fr"Z:\Pessoal\2025\GMS\{x}.pdf"
+)
+
+    
+    # Reordenar colunas conforme especificado
+    df = df[['Nº', 'EMPRESAS', 'Periodo', 'Salvar Como', 'Competencia', 'Caminho']]
+    
+    progress_callback(0.8)
+    log_callback("Salvando arquivo Excel de saída...")
+    df.to_excel(excel_saida, index=False)
+    log_callback(f"Arquivo Excel gerado com sucesso: {excel_saida}")
+    return len(df)
+
 # Mapeamento de modelos para funções de processamento
 processadores = {
     "ONE": processar_one,
     "Cobranca": processar_cobranca,
     "ProrContrato": processar_renovacao,
-    "ComuniCertificado": processar_comunicado
+    "ComuniCertificado": processar_comunicado,
+    "DomBot_GMS": processar_dombot
 }
 
 def get_resource_path(relative_path):
@@ -341,7 +396,7 @@ def get_resource_path(relative_path):
 class ExcelGeneratorApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("M.E.G_ONE - Main Excel Generator ONE V1.0")
+        self.root.title("M.E.G_ONE - Main Excel Generator ONE V1.2")
         self.root.geometry("700x500")
         self.root.resizable(False, False)
         
@@ -558,12 +613,35 @@ class ExcelGeneratorApp:
             )
         
         # Campos comuns
-        self.input_entry = self.create_compact_field(
-            self.inputs_frame, 
-            "📋 Contatos Onvio:", 
-            "Selecionar", 
-            self.select_input_excel
-        )
+        if choice == "DomBot_GMS":
+            # Campo para Período em vez de Contatos Onvio
+            periodo_frame = ctk.CTkFrame(self.inputs_frame, fg_color="transparent")
+            periodo_frame.pack(fill="x", pady=2)
+            
+            label = ctk.CTkLabel(
+                periodo_frame,
+                text="📅 Período (MM/YYYY):",
+                font=ctk.CTkFont(size=10, weight="bold"),
+                width=120,
+                anchor="w"
+            )
+            label.pack(side="left", padx=(0, 5))
+            
+            self.periodo_entry = ctk.CTkEntry(
+                periodo_frame,
+                placeholder_text="Ex: 08/2025 (deixe vazio para atual)",
+                height=26,
+                font=ctk.CTkFont(size=9)
+            )
+            self.periodo_entry.pack(side="left", fill="x", expand=True)
+        else:
+            # Campo normal de Contatos Onvio para outros modelos
+            self.input_entry = self.create_compact_field(
+                self.inputs_frame, 
+                "📋 Contatos Onvio:", 
+                "Selecionar", 
+                self.select_input_excel
+            )
         
         self.output_entry = self.create_compact_field(
             self.inputs_frame, 
@@ -659,7 +737,7 @@ class ExcelGeneratorApp:
             messagebox.showerror("Erro", "Selecione o Excel Base.")
             return False
         
-        if not self.excel_entrada:
+        if self.modelo != "DomBot_GMS" and not self.excel_entrada:
             messagebox.showerror("Erro", "Selecione o Excel de Contatos Onvio.")
             return False
         
@@ -691,13 +769,24 @@ class ExcelGeneratorApp:
                 raise ValueError(f"Modelo {self.modelo} não encontrado.")
             
             input_file = self.pasta_pdf if self.modelo in ["ONE", "Cobranca"] else self.excel_base
-            total_registros = processador(
-                input_file, 
-                self.excel_entrada, 
-                self.excel_saida, 
-                self.log_message, 
-                self.progress_bar.set
-            )
+            if self.modelo == "DomBot_GMS":
+                periodo = self.periodo_entry.get().strip() if hasattr(self, 'periodo_entry') else ""
+                total_registros = processador(
+                    input_file, 
+                    self.excel_entrada, 
+                    self.excel_saida, 
+                    self.log_message, 
+                    self.progress_bar.set,
+                    periodo=periodo
+                )
+            else:
+                total_registros = processador(
+                    input_file, 
+                    self.excel_entrada, 
+                    self.excel_saida, 
+                    self.log_message, 
+                    self.progress_bar.set
+                )
             
             self.progress_bar.set(1.0)
             self.status_label.configure(text="✅ Processamento concluído!")
