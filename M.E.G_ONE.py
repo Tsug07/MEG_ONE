@@ -53,7 +53,8 @@ def limpar_codigo(codigo):
 # Funções de processamento para cada modelo
 def processar_one(pasta_pdf, excel_entrada, excel_saida, log_callback, progress_callback):
     codigos_empresas = []
-    padrao = r'^(\d+)-'
+    # Aceita tanto "12-" quanto "12 -"
+    padrao = r'^(\d+)\s*-'
     pdf_files = [f for f in os.listdir(pasta_pdf) if f.lower().endswith('.pdf')]
     log_callback(f"Encontrados {len(pdf_files)} arquivos PDF")
     progress_callback(0.2)
@@ -81,7 +82,7 @@ def processar_one(pasta_pdf, excel_entrada, excel_saida, log_callback, progress_
             'Empresa': '',
             'Contato Onvio': '',
             'Grupo Onvio': '',
-            'Caminho': arquivo_pdf
+            'Caminho': os.path.join(pasta_pdf, arquivo_pdf)
         }
         if codigo in df_excel.iloc[:, 0].values:
             linha = df_excel[df_excel.iloc[:, 0] == codigo].iloc[0]
