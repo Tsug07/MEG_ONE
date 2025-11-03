@@ -328,7 +328,7 @@ def processar_dombot(excel_base, excel_entrada, excel_saida, log_callback, progr
     progress_callback(0.2)
     
     # Ler o Excel base, sheet específica
-    df = pd.read_excel(excel_base, sheet_name="DP - GMS")
+    df = pd.read_excel(excel_base)
     
     # Renomear colunas para padronização
     df.columns = ['Nº', 'EMPRESAS', 'Tarefa']  # Ignorar a terceira coluna
