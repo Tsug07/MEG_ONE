@@ -53,8 +53,7 @@ def limpar_codigo(codigo):
 # Funções de processamento para cada modelo
 def processar_one(pasta_pdf, excel_entrada, excel_saida, log_callback, progress_callback):
     codigos_empresas = []
-    # Aceita tanto "12-" quanto "12 -"
-    padrao = r'^(\d+)\s*-'
+    padrao = r'^(\d+)-'
     pdf_files = [f for f in os.listdir(pasta_pdf) if f.lower().endswith('.pdf')]
     log_callback(f"Encontrados {len(pdf_files)} arquivos PDF")
     progress_callback(0.2)
@@ -82,7 +81,7 @@ def processar_one(pasta_pdf, excel_entrada, excel_saida, log_callback, progress_
             'Empresa': '',
             'Contato Onvio': '',
             'Grupo Onvio': '',
-            'Caminho': os.path.join(pasta_pdf, arquivo_pdf)
+            'Caminho': arquivo_pdf
         }
         if codigo in df_excel.iloc[:, 0].values:
             linha = df_excel[df_excel.iloc[:, 0] == codigo].iloc[0]
@@ -321,92 +320,13 @@ def processar_comunicado(excel_base, excel_entrada, excel_saida, log_callback, p
     log_callback(f"Arquivo Excel gerado com sucesso: {excel_saida}")
     return len(linhas)
 
-
-def processar_all(excel_origem, excel_contato, excel_saida, log_callback, progress_callback):
-    """
-    Modelo ALL: Compara Excel de Origem (2 colunas: código, nome) com Excel de Contato (4 colunas).
-    Mantém todos os códigos do Excel de Origem, preenchendo Contato e Grupo quando houver correspondência.
-    """
-    log_callback("Lendo Excel de Origem...")
-    progress_callback(0.2)
-
-    # Ler Excel de Origem (2 colunas: código, nome da empresa)
-    df_origem = pd.read_excel(excel_origem)
-    if df_origem.shape[1] < 2:
-        raise ValueError("O Excel de Origem deve ter pelo menos 2 colunas (Código e Nome da Empresa).")
-
-    # Limpar códigos do Excel de Origem
-    df_origem['codigo_limpo'] = df_origem.iloc[:, 0].apply(limpar_codigo)
-    log_callback(f"Códigos encontrados no Excel de Origem: {len(df_origem)}")
-
-    progress_callback(0.4)
-    log_callback("Lendo Excel de Contato...")
-
-    # Ler Excel de Contato (4 colunas: código, nome, contato, grupo)
-    df_contato = pd.read_excel(excel_contato)
-    if df_contato.shape[1] < 4:
-        raise ValueError("O Excel de Contato deve ter pelo menos 4 colunas (Código, Nome, Contato, Grupo).")
-
-    log_callback(f"Registros no Excel de Contato: {len(df_contato)}")
-
-    # Criar dicionário de contatos para busca rápida
-    contatos_dict = {}
-    for _, row in df_contato.iterrows():
-        codigo = limpar_codigo(row.iloc[0])
-        contatos_dict[codigo] = {
-            'contato': row.iloc[2] if pd.notna(row.iloc[2]) else '',
-            'grupo': row.iloc[3] if pd.notna(row.iloc[3]) else ''
-        }
-
-    progress_callback(0.6)
-    log_callback("Comparando códigos e criando resultados...")
-
-    # Obter nomes das colunas originais do Excel de Contato
-    col_names = df_contato.columns.tolist()
-
-    # Criar resultado com todos os códigos do Excel de Origem
-    resultados = []
-    correspondencias = 0
-    sem_correspondencia = 0
-
-    for _, row in df_origem.iterrows():
-        codigo = row['codigo_limpo']
-        nome_empresa = row.iloc[1] if pd.notna(row.iloc[1]) else ''
-
-        if codigo in contatos_dict:
-            contato = contatos_dict[codigo]['contato']
-            grupo = contatos_dict[codigo]['grupo']
-            correspondencias += 1
-        else:
-            contato = ''
-            grupo = ''
-            sem_correspondencia += 1
-
-        resultados.append({
-            col_names[0]: row.iloc[0],  # Código original
-            col_names[1]: nome_empresa,  # Nome da Empresa
-            col_names[2]: contato,       # Contato
-            col_names[3]: grupo          # Grupo
-        })
-
-    log_callback(f"Correspondências encontradas: {correspondencias}")
-    log_callback(f"Sem correspondência (colunas em branco): {sem_correspondencia}")
-
-    progress_callback(0.8)
-    log_callback("Salvando arquivo Excel de saída...")
-    df_resultado = pd.DataFrame(resultados)
-    df_resultado.to_excel(excel_saida, index=False)
-    log_callback(f"Arquivo Excel gerado com sucesso: {excel_saida}")
-    return len(resultados)
-
-
 def processar_dombot(excel_base, excel_entrada, excel_saida, log_callback, progress_callback, periodo=""):
     # Nota: Este modelo não usa excel_entrada (Contatos Onvio), pois não utiliza contatos ou grupos
     log_callback("Lendo Excel Base...")
     progress_callback(0.2)
     
     # Ler o Excel base, sheet específica
-    df = pd.read_excel(excel_base)
+    df = pd.read_excel(excel_base, sheet_name="DP - GMS")
     
     # Renomear colunas para padronização
     df.columns = ['Nº', 'EMPRESAS', 'Tarefa']  # Ignorar a terceira coluna
@@ -459,8 +379,7 @@ processadores = {
     "Cobranca": processar_cobranca,
     "ProrContrato": processar_renovacao,
     "ComuniCertificado": processar_comunicado,
-    "DomBot_GMS": processar_dombot,
-    "ALL": processar_all
+    "DomBot_GMS": processar_dombot
 }
 
 def get_resource_path(relative_path):
@@ -476,7 +395,7 @@ def get_resource_path(relative_path):
 class ExcelGeneratorApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("M.E.G_ONE - Main Excel Generator ONE V1.2")
+        self.root.title("M.E.G_ONE - Main Excel Generator ONE V1.0")
         self.root.geometry("700x500")
         self.root.resizable(False, False)
         
@@ -664,48 +583,40 @@ class ExcelGeneratorApp:
     def update_inputs(self, choice):
         """Atualiza os campos de entrada baseado no modelo selecionado"""
         self.modelo = choice
-
+        
         # Limpa campos anteriores
         for widget in self.inputs_frame.winfo_children():
             widget.destroy()
-
+        
         # Cria campos específicos do modelo
         if choice == "ONE":
             self.pdf_entry = self.create_compact_field(
-                self.inputs_frame,
-                "📁 Pasta PDF:",
-                "Selecionar",
+                self.inputs_frame, 
+                "📁 Pasta PDF:", 
+                "Selecionar", 
                 self.select_pdf_folder
             )
         elif choice == "Cobranca":
             self.pdf_entry = self.create_compact_field(
-                self.inputs_frame,
-                "📄 Arquivo PDF:",
-                "Selecionar",
+                self.inputs_frame, 
+                "📄 Arquivo PDF:", 
+                "Selecionar", 
                 self.select_pdf_file
-            )
-        elif choice == "ALL":
-            # Modelo ALL: Excel de Origem e Excel de Contato
-            self.excel_base_entry = self.create_compact_field(
-                self.inputs_frame,
-                "📊 Excel Origem:",
-                "Selecionar",
-                self.select_excel_base
             )
         else:
             self.excel_base_entry = self.create_compact_field(
-                self.inputs_frame,
-                "📊 Excel Base:",
-                "Selecionar",
+                self.inputs_frame, 
+                "📊 Excel Base:", 
+                "Selecionar", 
                 self.select_excel_base
             )
-
+        
         # Campos comuns
         if choice == "DomBot_GMS":
             # Campo para Período em vez de Contatos Onvio
             periodo_frame = ctk.CTkFrame(self.inputs_frame, fg_color="transparent")
             periodo_frame.pack(fill="x", pady=2)
-
+            
             label = ctk.CTkLabel(
                 periodo_frame,
                 text="📅 Período (MM/YYYY):",
@@ -714,7 +625,7 @@ class ExcelGeneratorApp:
                 anchor="w"
             )
             label.pack(side="left", padx=(0, 5))
-
+            
             self.periodo_entry = ctk.CTkEntry(
                 periodo_frame,
                 placeholder_text="Ex: 08/2025 (deixe vazio para atual)",
@@ -722,20 +633,12 @@ class ExcelGeneratorApp:
                 font=ctk.CTkFont(size=9)
             )
             self.periodo_entry.pack(side="left", fill="x", expand=True)
-        elif choice == "ALL":
-            # Campo Excel de Contato para modelo ALL
-            self.input_entry = self.create_compact_field(
-                self.inputs_frame,
-                "📋 Excel Contato:",
-                "Selecionar",
-                self.select_input_excel
-            )
         else:
             # Campo normal de Contatos Onvio para outros modelos
             self.input_entry = self.create_compact_field(
-                self.inputs_frame,
-                "📋 Contatos Onvio:",
-                "Selecionar",
+                self.inputs_frame, 
+                "📋 Contatos Onvio:", 
+                "Selecionar", 
                 self.select_input_excel
             )
         
@@ -820,35 +723,27 @@ class ExcelGeneratorApp:
         if not self.modelo:
             messagebox.showerror("Erro", "Selecione um modelo.")
             return False
-
+        
         if self.modelo == "ONE" and not self.pasta_pdf:
             messagebox.showerror("Erro", "Selecione a pasta com arquivos PDF.")
             return False
-
+        
         if self.modelo == "Cobranca" and not self.pasta_pdf:
             messagebox.showerror("Erro", "Selecione o arquivo PDF.")
             return False
-
+        
         if self.modelo in ["ProrContrato", "ComuniCertificado", "DomBot_GMS"] and not self.excel_base:
             messagebox.showerror("Erro", "Selecione o Excel Base.")
             return False
-
-        if self.modelo == "ALL" and not self.excel_base:
-            messagebox.showerror("Erro", "Selecione o Excel de Origem.")
-            return False
-
-        if self.modelo == "ALL" and not self.excel_entrada:
-            messagebox.showerror("Erro", "Selecione o Excel de Contato.")
-            return False
-
-        if self.modelo not in ["DomBot_GMS", "ALL"] and not self.excel_entrada:
+        
+        if self.modelo != "DomBot_GMS" and not self.excel_entrada:
             messagebox.showerror("Erro", "Selecione o Excel de Contatos Onvio.")
             return False
-
+        
         if not self.excel_saida:
             messagebox.showerror("Erro", "Defina o arquivo Excel de saída.")
             return False
-
+        
         return True
     
     def process_files(self):
