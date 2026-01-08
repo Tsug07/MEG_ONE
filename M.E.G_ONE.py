@@ -322,22 +322,54 @@ def processar_comunicado(excel_base, excel_entrada, excel_saida, log_callback, p
     return len(linhas)
 
 
+def normalizar_nome(nome):
+    """Normaliza nome da empresa para comparação (remove espaços extras, converte para minúsculo)"""
+    if nome is None or pd.isna(nome):
+        return ""
+    return str(nome).strip().lower()
+
+
+def calcular_similaridade(str1, str2):
+    """Calcula a similaridade entre duas strings (0 a 1) usando SequenceMatcher"""
+    from difflib import SequenceMatcher
+    if not str1 or not str2:
+        return 0.0
+    return SequenceMatcher(None, str1, str2).ratio()
+
+
+def buscar_por_similaridade(nome_busca, contatos_por_nome, limite_similaridade=0.8):
+    """
+    Busca um nome no dicionário de contatos por similaridade.
+    Retorna o contato_info se encontrar correspondência >= limite_similaridade, senão None.
+    """
+    if not nome_busca:
+        return None, 0.0
+
+    melhor_match = None
+    melhor_similaridade = 0.0
+
+    for nome_contato, contato_info in contatos_por_nome.items():
+        similaridade = calcular_similaridade(nome_busca, nome_contato)
+        if similaridade >= limite_similaridade and similaridade > melhor_similaridade:
+            melhor_similaridade = similaridade
+            melhor_match = contato_info
+
+    return melhor_match, melhor_similaridade
+
+
 def processar_all(excel_origem, excel_contato, excel_saida, log_callback, progress_callback):
     """
-    Modelo ALL: Compara Excel de Origem (2 colunas: código, nome) com Excel de Contato (4 colunas).
-    Mantém todos os códigos do Excel de Origem, preenchendo Contato e Grupo quando houver correspondência.
+    Modelo ALL: Compara Excel de Origem com Excel de Contato.
+    Suporta comparação por código (coluna A) OU por nome da empresa (coluna A ou B).
+    Mantém todos os registros do Excel de Origem, preenchendo Contato e Grupo quando houver correspondência.
     """
     log_callback("Lendo Excel de Origem...")
     progress_callback(0.2)
 
-    # Ler Excel de Origem (2 colunas: código, nome da empresa)
+    # Ler Excel de Origem
     df_origem = pd.read_excel(excel_origem)
-    if df_origem.shape[1] < 2:
-        raise ValueError("O Excel de Origem deve ter pelo menos 2 colunas (Código e Nome da Empresa).")
-
-    # Limpar códigos do Excel de Origem
-    df_origem['codigo_limpo'] = df_origem.iloc[:, 0].apply(limpar_codigo)
-    log_callback(f"Códigos encontrados no Excel de Origem: {len(df_origem)}")
+    log_callback(f"Registros no Excel de Origem: {len(df_origem)}")
+    log_callback(f"Colunas encontradas: {df_origem.shape[1]}")
 
     progress_callback(0.4)
     log_callback("Lendo Excel de Contato...")
@@ -349,47 +381,98 @@ def processar_all(excel_origem, excel_contato, excel_saida, log_callback, progre
 
     log_callback(f"Registros no Excel de Contato: {len(df_contato)}")
 
-    # Criar dicionário de contatos para busca rápida
-    contatos_dict = {}
+    # Criar dicionários de contatos para busca rápida (por código e por nome)
+    contatos_por_codigo = {}
+    contatos_por_nome = {}
+
     for _, row in df_contato.iterrows():
         codigo = limpar_codigo(row.iloc[0])
-        contatos_dict[codigo] = {
+        nome = normalizar_nome(row.iloc[1])
+        contato_info = {
+            'codigo': row.iloc[0],
+            'nome': row.iloc[1] if pd.notna(row.iloc[1]) else '',
             'contato': row.iloc[2] if pd.notna(row.iloc[2]) else '',
             'grupo': row.iloc[3] if pd.notna(row.iloc[3]) else ''
         }
 
+        if codigo:
+            contatos_por_codigo[codigo] = contato_info
+        if nome:
+            contatos_por_nome[nome] = contato_info
+
     progress_callback(0.6)
-    log_callback("Comparando códigos e criando resultados...")
+    log_callback("Comparando registros e criando resultados...")
 
     # Obter nomes das colunas originais do Excel de Contato
     col_names = df_contato.columns.tolist()
 
-    # Criar resultado com todos os códigos do Excel de Origem
+    # Criar resultado com todos os registros do Excel de Origem
     resultados = []
-    correspondencias = 0
+    correspondencias_codigo = 0
+    correspondencias_nome_exato = 0
+    correspondencias_nome_similar = 0
     sem_correspondencia = 0
 
     for _, row in df_origem.iterrows():
-        codigo = row['codigo_limpo']
-        nome_empresa = row.iloc[1] if pd.notna(row.iloc[1]) else ''
+        valor_coluna_a = row.iloc[0] if pd.notna(row.iloc[0]) else ''
+        valor_coluna_b = row.iloc[1] if df_origem.shape[1] > 1 and pd.notna(row.iloc[1]) else ''
 
-        if codigo in contatos_dict:
-            contato = contatos_dict[codigo]['contato']
-            grupo = contatos_dict[codigo]['grupo']
-            correspondencias += 1
+        # Tentar limpar como código
+        codigo_limpo = limpar_codigo(valor_coluna_a)
+        nome_normalizado_a = normalizar_nome(valor_coluna_a)
+        nome_normalizado_b = normalizar_nome(valor_coluna_b)
+
+        contato_info = None
+
+        # 1. Tentar encontrar por código (coluna A)
+        if codigo_limpo and codigo_limpo in contatos_por_codigo:
+            contato_info = contatos_por_codigo[codigo_limpo]
+            correspondencias_codigo += 1
+
+        # 2. Se não encontrou por código, tentar por nome exato (coluna A)
+        elif nome_normalizado_a and nome_normalizado_a in contatos_por_nome:
+            contato_info = contatos_por_nome[nome_normalizado_a]
+            correspondencias_nome_exato += 1
+
+        # 3. Se não encontrou, tentar por nome exato (coluna B)
+        elif nome_normalizado_b and nome_normalizado_b in contatos_por_nome:
+            contato_info = contatos_por_nome[nome_normalizado_b]
+            correspondencias_nome_exato += 1
+
+        # 4. Se não encontrou exato, tentar por similaridade (coluna A) - 80%
+        if not contato_info and nome_normalizado_a:
+            contato_info, similaridade = buscar_por_similaridade(nome_normalizado_a, contatos_por_nome, 0.8)
+            if contato_info:
+                correspondencias_nome_similar += 1
+                log_callback(f"Similaridade {similaridade:.0%}: '{valor_coluna_a}' -> '{contato_info['nome']}'")
+
+        # 5. Se ainda não encontrou, tentar por similaridade (coluna B) - 80%
+        if not contato_info and nome_normalizado_b:
+            contato_info, similaridade = buscar_por_similaridade(nome_normalizado_b, contatos_por_nome, 0.8)
+            if contato_info:
+                correspondencias_nome_similar += 1
+                log_callback(f"Similaridade {similaridade:.0%}: '{valor_coluna_b}' -> '{contato_info['nome']}'")
+
+        if contato_info:
+            resultados.append({
+                col_names[0]: contato_info['codigo'],
+                col_names[1]: contato_info['nome'],
+                col_names[2]: contato_info['contato'],
+                col_names[3]: contato_info['grupo']
+            })
         else:
-            contato = ''
-            grupo = ''
+            # Sem correspondência - mantém dados originais com colunas em branco
             sem_correspondencia += 1
+            resultados.append({
+                col_names[0]: valor_coluna_a,
+                col_names[1]: valor_coluna_b if valor_coluna_b else valor_coluna_a,
+                col_names[2]: '',
+                col_names[3]: ''
+            })
 
-        resultados.append({
-            col_names[0]: row.iloc[0],  # Código original
-            col_names[1]: nome_empresa,  # Nome da Empresa
-            col_names[2]: contato,       # Contato
-            col_names[3]: grupo          # Grupo
-        })
-
-    log_callback(f"Correspondências encontradas: {correspondencias}")
+    log_callback(f"Correspondências por código: {correspondencias_codigo}")
+    log_callback(f"Correspondências por nome exato: {correspondencias_nome_exato}")
+    log_callback(f"Correspondências por similaridade (>=80%): {correspondencias_nome_similar}")
     log_callback(f"Sem correspondência (colunas em branco): {sem_correspondencia}")
 
     progress_callback(0.8)
