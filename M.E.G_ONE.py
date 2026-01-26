@@ -483,6 +483,104 @@ def processar_all(excel_origem, excel_contato, excel_saida, log_callback, progre
     return len(resultados)
 
 
+def formatar_cnpj_all_info(cnpj):
+    """
+    Formata CNPJ para 14 dígitos.
+    Trata casos com 12, 13 ou 14 dígitos.
+    """
+    if cnpj is None or pd.isna(cnpj):
+        return ''
+
+    # Converte para string e remove caracteres não numéricos
+    cnpj_str = str(cnpj)
+
+    # Se vier como float (ex: 12345678000190.0), converte primeiro
+    if '.' in cnpj_str:
+        try:
+            cnpj_str = str(int(float(cnpj_str)))
+        except:
+            pass
+
+    # Remove qualquer caractere não numérico
+    cnpj_str = re.sub(r'\D', '', cnpj_str)
+
+    # Completa com zeros à esquerda até 14 dígitos
+    cnpj_str = cnpj_str.zfill(14)
+
+    return cnpj_str
+
+
+def processar_all_info(excel_origem, excel_contato, excel_saida, log_callback, progress_callback):
+    """
+    Modelo ALL_info: Similar ao ALL, mas retorna TODAS as colunas do Excel de Contato.
+    Quando encontra correspondência por código, traz todas as informações do contato.
+    Inclui formatação de CNPJ para 14 dígitos.
+    """
+    log_callback("Lendo Excel de Origem...")
+    progress_callback(0.2)
+
+    # Ler Excel de Origem
+    df_origem = pd.read_excel(excel_origem)
+    log_callback(f"Registros no Excel de Origem: {len(df_origem)}")
+
+    progress_callback(0.4)
+    log_callback("Lendo Excel de Contato...")
+
+    # Ler Excel de Contato (todas as colunas)
+    df_contato = pd.read_excel(excel_contato)
+    colunas_contato = df_contato.columns.tolist()
+    log_callback(f"Registros no Excel de Contato: {len(df_contato)}")
+    log_callback(f"Colunas do Excel de Contato: {colunas_contato}")
+
+    # Criar dicionário de contatos indexado por código (coluna A)
+    contatos_por_codigo = {}
+    for _, row in df_contato.iterrows():
+        codigo = limpar_codigo(row.iloc[0])
+        if codigo:
+            # Armazena toda a linha como dicionário
+            contato_info = {}
+            for i, col in enumerate(colunas_contato):
+                valor = row.iloc[i]
+                # Formata CNPJ se a coluna contiver "cnpj" no nome
+                if 'cnpj' in str(col).lower() and pd.notna(valor):
+                    valor = formatar_cnpj_all_info(valor)
+                contato_info[col] = valor if pd.notna(valor) else ''
+            contatos_por_codigo[codigo] = contato_info
+
+    progress_callback(0.6)
+    log_callback("Comparando códigos e criando resultados...")
+
+    # Criar resultado
+    resultados = []
+    correspondencias = 0
+    sem_correspondencia = 0
+
+    for _, row in df_origem.iterrows():
+        valor_coluna_a = row.iloc[0] if pd.notna(row.iloc[0]) else ''
+        codigo_limpo = limpar_codigo(valor_coluna_a)
+
+        if codigo_limpo and codigo_limpo in contatos_por_codigo:
+            # Encontrou correspondência - usa todas as colunas do contato
+            resultados.append(contatos_por_codigo[codigo_limpo])
+            correspondencias += 1
+        else:
+            # Sem correspondência - cria linha com código e colunas vazias
+            linha_vazia = {col: '' for col in colunas_contato}
+            linha_vazia[colunas_contato[0]] = valor_coluna_a  # Mantém o código original
+            resultados.append(linha_vazia)
+            sem_correspondencia += 1
+
+    log_callback(f"Correspondências encontradas: {correspondencias}")
+    log_callback(f"Sem correspondência: {sem_correspondencia}")
+
+    progress_callback(0.8)
+    log_callback("Salvando arquivo Excel de saída...")
+    df_resultado = pd.DataFrame(resultados)
+    df_resultado.to_excel(excel_saida, index=False)
+    log_callback(f"Arquivo Excel gerado com sucesso: {excel_saida}")
+    return len(resultados)
+
+
 def processar_dombot(excel_base, excel_entrada, excel_saida, log_callback, progress_callback, periodo=""):
     # Nota: Este modelo não usa excel_entrada (Contatos Onvio), pois não utiliza contatos ou grupos
     log_callback("Lendo Excel Base...")
@@ -543,7 +641,8 @@ processadores = {
     "ProrContrato": processar_renovacao,
     "ComuniCertificado": processar_comunicado,
     "DomBot_GMS": processar_dombot,
-    "ALL": processar_all
+    "ALL": processar_all,
+    "ALL_info": processar_all_info
 }
 
 def get_resource_path(relative_path):
@@ -767,8 +866,8 @@ class ExcelGeneratorApp:
                 "Selecionar",
                 self.select_pdf_file
             )
-        elif choice == "ALL":
-            # Modelo ALL: Excel de Origem e Excel de Contato
+        elif choice in ["ALL", "ALL_info"]:
+            # Modelo ALL e ALL_info: Excel de Origem e Excel de Contato
             self.excel_base_entry = self.create_compact_field(
                 self.inputs_frame,
                 "📊 Excel Origem:",
@@ -805,8 +904,8 @@ class ExcelGeneratorApp:
                 font=ctk.CTkFont(size=9)
             )
             self.periodo_entry.pack(side="left", fill="x", expand=True)
-        elif choice == "ALL":
-            # Campo Excel de Contato para modelo ALL
+        elif choice in ["ALL", "ALL_info"]:
+            # Campo Excel de Contato para modelo ALL e ALL_info
             self.input_entry = self.create_compact_field(
                 self.inputs_frame,
                 "📋 Excel Contato:",
@@ -916,15 +1015,15 @@ class ExcelGeneratorApp:
             messagebox.showerror("Erro", "Selecione o Excel Base.")
             return False
 
-        if self.modelo == "ALL" and not self.excel_base:
+        if self.modelo in ["ALL", "ALL_info"] and not self.excel_base:
             messagebox.showerror("Erro", "Selecione o Excel de Origem.")
             return False
 
-        if self.modelo == "ALL" and not self.excel_entrada:
+        if self.modelo in ["ALL", "ALL_info"] and not self.excel_entrada:
             messagebox.showerror("Erro", "Selecione o Excel de Contato.")
             return False
 
-        if self.modelo not in ["DomBot_GMS", "ALL"] and not self.excel_entrada:
+        if self.modelo not in ["DomBot_GMS", "ALL", "ALL_info"] and not self.excel_entrada:
             messagebox.showerror("Erro", "Selecione o Excel de Contatos Onvio.")
             return False
 
