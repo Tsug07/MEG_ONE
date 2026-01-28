@@ -510,14 +510,33 @@ def formatar_cnpj_all_info(cnpj):
     return cnpj_str
 
 
+def obter_competencia_anterior():
+    """
+    Retorna a competência do mês anterior no formato MM/YYYY.
+    Ex: Se estamos em fevereiro/2026, retorna '01/2026'.
+    """
+    hoje = datetime.now()
+    # Primeiro dia do mês atual
+    primeiro_dia_mes_atual = hoje.replace(day=1)
+    # Último dia do mês anterior
+    ultimo_dia_mes_anterior = primeiro_dia_mes_atual - pd.Timedelta(days=1)
+    # Formata como MM/YYYY
+    return ultimo_dia_mes_anterior.strftime("%m/%Y")
+
+
 def processar_all_info(excel_origem, excel_contato, excel_saida, log_callback, progress_callback):
     """
     Modelo ALL_info: Similar ao ALL, mas retorna TODAS as colunas do Excel de Contato.
     Quando encontra correspondência por código, traz todas as informações do contato.
     Inclui formatação de CNPJ para 14 dígitos.
+    Adiciona coluna 'Competência' com o mês anterior (para mensagens de notificação).
     """
     log_callback("Lendo Excel de Origem...")
     progress_callback(0.2)
+
+    # Obter competência (mês anterior)
+    competencia = obter_competencia_anterior()
+    log_callback(f"Competência definida: {competencia} (mês anterior)")
 
     # Ler Excel de Origem
     df_origem = pd.read_excel(excel_origem)
@@ -561,12 +580,15 @@ def processar_all_info(excel_origem, excel_contato, excel_saida, log_callback, p
 
         if codigo_limpo and codigo_limpo in contatos_por_codigo:
             # Encontrou correspondência - usa todas as colunas do contato
-            resultados.append(contatos_por_codigo[codigo_limpo])
+            linha = contatos_por_codigo[codigo_limpo].copy()
+            linha['Competência'] = competencia
+            resultados.append(linha)
             correspondencias += 1
         else:
             # Sem correspondência - cria linha com código e colunas vazias
             linha_vazia = {col: '' for col in colunas_contato}
             linha_vazia[colunas_contato[0]] = valor_coluna_a  # Mantém o código original
+            linha_vazia['Competência'] = competencia
             resultados.append(linha_vazia)
             sem_correspondencia += 1
 
