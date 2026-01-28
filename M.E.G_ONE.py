@@ -598,6 +598,13 @@ def processar_all_info(excel_origem, excel_contato, excel_saida, log_callback, p
     progress_callback(0.8)
     log_callback("Salvando arquivo Excel de saída...")
     df_resultado = pd.DataFrame(resultados)
+
+    # Reordenar colunas para garantir que Competência fique no final
+    # Ordem desejada: colunas originais do contato (incluindo CNPJ) + Competência
+    colunas_ordenadas = [col for col in df_resultado.columns if col != 'Competência']
+    colunas_ordenadas.append('Competência')
+    df_resultado = df_resultado[colunas_ordenadas]
+
     df_resultado.to_excel(excel_saida, index=False)
     log_callback(f"Arquivo Excel gerado com sucesso: {excel_saida}")
     return len(resultados)
