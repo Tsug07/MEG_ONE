@@ -610,26 +610,26 @@ def processar_all_info(excel_origem, excel_contato, excel_saida, log_callback, p
     return len(resultados)
 
 
-def processar_dombot(excel_base, excel_entrada, excel_saida, log_callback, progress_callback, periodo=""):
+def processar_dombot(excel_base, excel_entrada, excel_saida, log_callback, progress_callback, periodo="", pasta_destino=""):
     # Nota: Este modelo não usa excel_entrada (Contatos Onvio), pois não utiliza contatos ou grupos
     log_callback("Lendo Excel Base...")
     progress_callback(0.2)
-    
+
     # Ler o Excel base, sheet específica
     df = pd.read_excel(excel_base)
-    
+
     # Renomear colunas para padronização
     df.columns = ['Nº', 'EMPRESAS', 'Tarefa']  # Ignorar a terceira coluna
-    
+
     # Converter 'Nº' para string e limpar
     df['Nº'] = df['Nº'].apply(limpar_codigo)
-    
+
     # Remover duplicatas baseadas em 'Nº' e 'EMPRESAS'
     df = df.drop_duplicates(subset=['Nº', 'EMPRESAS'])
-    
+
     progress_callback(0.4)
     log_callback(f"Registros únicos encontrados: {len(df)}")
-    
+
     # Obter Periodo e Competencia baseados no período fornecido ou data atual
     if periodo:
         try:
@@ -644,14 +644,22 @@ def processar_dombot(excel_base, excel_entrada, excel_saida, log_callback, progr
         periodo = agora.strftime("%m/%Y")
         competencia = agora.strftime("%m%Y")
         log_callback("Usando período atual (fallback)")
-    
+
+    # Definir pasta de destino (usa valor padrão se não fornecido)
+    if not pasta_destino:
+        ano_atual = datetime.now().year
+        pasta_destino = fr"Z:\Pessoal\{ano_atual}\GMS"
+        log_callback(f"Usando pasta padrão: {pasta_destino}")
+    else:
+        log_callback(f"Usando pasta customizada: {pasta_destino}")
+
     # Adicionar colunas
     df['Periodo'] = periodo
     df['Competencia'] = competencia
     df['Salvar Como'] = df['Nº'] + '-' + df['EMPRESAS'] + '-' + df['Competencia']
     df['Caminho'] = df['Salvar Como'].apply(
-    lambda x: fr"Z:\Pessoal\2025\GMS\{x}.pdf"
-)
+        lambda x: fr"{pasta_destino}\{x}.pdf"
+    )
 
     
     # Reordenar colunas conforme especificado
@@ -696,6 +704,7 @@ class ExcelGeneratorApp:
         self.excel_entrada = ""
         self.excel_saida = ""
         self.modelo = ""
+        self.pasta_destino_dombot = ""
         
         self.setup_ui()
       
@@ -928,11 +937,24 @@ class ExcelGeneratorApp:
 
             self.periodo_entry = ctk.CTkEntry(
                 periodo_frame,
-                placeholder_text="Ex: 08/2025 (deixe vazio para atual)",
+                placeholder_text="Ex: 02/2026 (deixe vazio para atual)",
                 height=26,
                 font=ctk.CTkFont(size=9)
             )
             self.periodo_entry.pack(side="left", fill="x", expand=True)
+
+            # Campo para Pasta de Destino dos PDFs
+            self.pasta_destino_entry = self.create_compact_field(
+                self.inputs_frame,
+                "📂 Pasta Destino:",
+                "Selecionar",
+                self.select_pasta_destino
+            )
+            # Define valor padrão com ano atual
+            ano_atual = datetime.now().year
+            pasta_padrao = fr"Z:\Pessoal\{ano_atual}\GMS"
+            self.pasta_destino_entry.insert(0, pasta_padrao)
+            self.pasta_destino_dombot = pasta_padrao
         elif choice in ["ALL", "ALL_info"]:
             # Campo Excel de Contato para modelo ALL e ALL_info
             self.input_entry = self.create_compact_field(
@@ -1017,6 +1039,20 @@ class ExcelGeneratorApp:
             self.output_entry.delete(0, "end")
             self.output_entry.insert(0, os.path.basename(file))
             self.log_message(f"💾 Saída definida: {os.path.basename(file)}")
+
+    def select_pasta_destino(self):
+        """Seleciona a pasta de destino para os arquivos PDF do DomBot_GMS"""
+        folder = filedialog.askdirectory(
+            title="Selecionar pasta de destino dos PDFs",
+            initialdir="Z:\\Pessoal"
+        )
+        if folder:
+            # Converte barras para o padrão Windows
+            folder = folder.replace("/", "\\")
+            self.pasta_destino_dombot = folder
+            self.pasta_destino_entry.delete(0, "end")
+            self.pasta_destino_entry.insert(0, folder)
+            self.log_message(f"📂 Pasta destino: {folder}")
     
     def log_message(self, message):
         """Adiciona mensagem ao log"""
@@ -1086,13 +1122,15 @@ class ExcelGeneratorApp:
             input_file = self.pasta_pdf if self.modelo in ["ONE", "Cobranca"] else self.excel_base
             if self.modelo == "DomBot_GMS":
                 periodo = self.periodo_entry.get().strip() if hasattr(self, 'periodo_entry') else ""
+                pasta_destino = self.pasta_destino_dombot if hasattr(self, 'pasta_destino_dombot') else ""
                 total_registros = processador(
-                    input_file, 
-                    self.excel_entrada, 
-                    self.excel_saida, 
-                    self.log_message, 
+                    input_file,
+                    self.excel_entrada,
+                    self.excel_saida,
+                    self.log_message,
                     self.progress_bar.set,
-                    periodo=periodo
+                    periodo=periodo,
+                    pasta_destino=pasta_destino
                 )
             else:
                 total_registros = processador(
