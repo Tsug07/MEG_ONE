@@ -6,6 +6,7 @@ import pdfplumber
 import openpyxl
 from datetime import datetime, date
 from collections import defaultdict
+import calendar
 import customtkinter as ctk
 from tkinter import filedialog, messagebox
 import threading
@@ -610,6 +611,98 @@ def processar_all_info(excel_origem, excel_contato, excel_saida, log_callback, p
     return len(resultados)
 
 
+def processar_dombot_econsig(caminho_pdf, excel_saida, log_callback, progress_callback, data_inicial="", data_final=""):
+    """
+    Modelo DomBot_Econsig: Lê um PDF e extrai Nº (código) e EMPRESAS (nome).
+    Gera Excel com: Nº, EMPRESAS, Data Inicial, Data Final, Salvar Como.
+    NOTA: A lógica de extração do PDF deve ser ajustada conforme o formato real do arquivo.
+    """
+    log_callback("Lendo arquivo PDF...")
+    progress_callback(0.2)
+
+    # Validar datas
+    if not data_inicial or not data_final:
+        raise ValueError("Data Inicial e Data Final são obrigatórias.")
+
+    # Extrair dados do PDF usando pdfplumber (tabelas)
+    dados_empresas = []
+
+    with pdfplumber.open(caminho_pdf) as pdf:
+        for i, pagina in enumerate(pdf.pages):
+            # Tenta extrair tabelas primeiro
+            tabelas = pagina.extract_tables()
+            if tabelas:
+                for tabela in tabelas:
+                    for linha in tabela:
+                        if linha and len(linha) >= 2:
+                            codigo = linha[0]
+                            nome = linha[1]
+                            # Ignora cabeçalhos e linhas vazias
+                            if codigo and nome and str(codigo).strip().lower() not in ['nº', 'n°', 'no', 'codigo', 'código', '']:
+                                codigo_limpo = limpar_codigo(codigo)
+                                if codigo_limpo:
+                                    dados_empresas.append({
+                                        'codigo': codigo_limpo,
+                                        'empresa': str(nome).strip()
+                                    })
+            else:
+                # Fallback: extrair texto e tentar parsear com regex
+                texto = pagina.extract_text()
+                if texto:
+                    # Padrão genérico: código numérico seguido de separador e nome
+                    # Ajustar este regex conforme o formato real do PDF
+                    padrao = r'(\d+)\s*[-–]\s*(.+)'
+                    for match in re.finditer(padrao, texto):
+                        codigo_limpo = limpar_codigo(match.group(1))
+                        nome = match.group(2).strip()
+                        if codigo_limpo and nome:
+                            dados_empresas.append({
+                                'codigo': codigo_limpo,
+                                'empresa': nome
+                            })
+
+            log_callback(f"Página {i + 1} processada")
+
+    progress_callback(0.5)
+    log_callback(f"Total de empresas extraídas do PDF: {len(dados_empresas)}")
+
+    if not dados_empresas:
+        raise ValueError("Nenhum dado encontrado no PDF. Verifique o formato do arquivo.")
+
+    # Remover duplicatas baseadas em código
+    vistos = set()
+    dados_unicos = []
+    for d in dados_empresas:
+        if d['codigo'] not in vistos:
+            vistos.add(d['codigo'])
+            dados_unicos.append(d)
+
+    log_callback(f"Registros únicos após remoção de duplicatas: {len(dados_unicos)}")
+
+    progress_callback(0.7)
+    log_callback("Montando planilha de saída...")
+
+    # Montar DataFrame com as colunas finais
+    resultados = []
+    for d in dados_unicos:
+        salvar_como = f"{d['codigo']}-{d['empresa']}"
+        resultados.append({
+            'Nº': d['codigo'],
+            'EMPRESAS': d['empresa'],
+            'Data Inicial': data_inicial,
+            'Data Final': data_final,
+            'Salvar Como': salvar_como
+        })
+
+    df = pd.DataFrame(resultados)
+
+    progress_callback(0.9)
+    log_callback("Salvando arquivo Excel de saída...")
+    df.to_excel(excel_saida, index=False)
+    log_callback(f"Arquivo Excel gerado com sucesso: {excel_saida}")
+    return len(resultados)
+
+
 def processar_dombot(excel_base, excel_entrada, excel_saida, log_callback, progress_callback, periodo="", pasta_destino=""):
     # Nota: Este modelo não usa excel_entrada (Contatos Onvio), pois não utiliza contatos ou grupos
     log_callback("Lendo Excel Base...")
@@ -678,6 +771,7 @@ processadores = {
     "ProrContrato": processar_renovacao,
     "ComuniCertificado": processar_comunicado,
     "DomBot_GMS": processar_dombot,
+    "DomBot_Econsig": processar_dombot_econsig,
     "ALL": processar_all,
     "ALL_info": processar_all_info
 }
@@ -897,7 +991,7 @@ class ExcelGeneratorApp:
                 "Selecionar",
                 self.select_pdf_folder
             )
-        elif choice == "Cobranca":
+        elif choice in ["Cobranca", "DomBot_Econsig"]:
             self.pdf_entry = self.create_compact_field(
                 self.inputs_frame,
                 "📄 Arquivo PDF:",
@@ -921,7 +1015,55 @@ class ExcelGeneratorApp:
             )
 
         # Campos comuns
-        if choice == "DomBot_GMS":
+        if choice == "DomBot_Econsig":
+            # Campos de Data Inicial e Data Final
+            data_ini_frame = ctk.CTkFrame(self.inputs_frame, fg_color="transparent")
+            data_ini_frame.pack(fill="x", pady=2)
+
+            ctk.CTkLabel(
+                data_ini_frame,
+                text="📅 Data Inicial:",
+                font=ctk.CTkFont(size=10, weight="bold"),
+                width=120,
+                anchor="w"
+            ).pack(side="left", padx=(0, 5))
+
+            self.data_inicial_entry = ctk.CTkEntry(
+                data_ini_frame,
+                placeholder_text="DD/MM/AAAA",
+                height=26,
+                font=ctk.CTkFont(size=9)
+            )
+            self.data_inicial_entry.pack(side="left", fill="x", expand=True)
+
+            data_fim_frame = ctk.CTkFrame(self.inputs_frame, fg_color="transparent")
+            data_fim_frame.pack(fill="x", pady=2)
+
+            ctk.CTkLabel(
+                data_fim_frame,
+                text="📅 Data Final:",
+                font=ctk.CTkFont(size=10, weight="bold"),
+                width=120,
+                anchor="w"
+            ).pack(side="left", padx=(0, 5))
+
+            self.data_final_entry = ctk.CTkEntry(
+                data_fim_frame,
+                placeholder_text="DD/MM/AAAA",
+                height=26,
+                font=ctk.CTkFont(size=9)
+            )
+            self.data_final_entry.pack(side="left", fill="x", expand=True)
+
+            # Preencher automaticamente com primeiro e último dia do mês atual
+            hoje = datetime.now()
+            primeiro_dia = hoje.replace(day=1).strftime("%d/%m/%Y")
+            ultimo_dia_num = calendar.monthrange(hoje.year, hoje.month)[1]
+            ultimo_dia = hoje.replace(day=ultimo_dia_num).strftime("%d/%m/%Y")
+            self.data_inicial_entry.insert(0, primeiro_dia)
+            self.data_final_entry.insert(0, ultimo_dia)
+
+        elif choice == "DomBot_GMS":
             # Campo para Período em vez de Contatos Onvio
             periodo_frame = ctk.CTkFrame(self.inputs_frame, fg_color="transparent")
             periodo_frame.pack(fill="x", pady=2)
@@ -963,8 +1105,8 @@ class ExcelGeneratorApp:
                 "Selecionar",
                 self.select_input_excel
             )
-        else:
-            # Campo normal de Contatos Onvio para outros modelos
+        elif choice != "DomBot_Econsig":
+            # Campo normal de Contatos Onvio para outros modelos (exceto DomBot_Econsig que não usa)
             self.input_entry = self.create_compact_field(
                 self.inputs_frame,
                 "📋 Contatos Onvio:",
@@ -1072,9 +1214,16 @@ class ExcelGeneratorApp:
             messagebox.showerror("Erro", "Selecione a pasta com arquivos PDF.")
             return False
 
-        if self.modelo == "Cobranca" and not self.pasta_pdf:
+        if self.modelo in ["Cobranca", "DomBot_Econsig"] and not self.pasta_pdf:
             messagebox.showerror("Erro", "Selecione o arquivo PDF.")
             return False
+
+        if self.modelo == "DomBot_Econsig":
+            data_ini = self.data_inicial_entry.get().strip() if hasattr(self, 'data_inicial_entry') else ""
+            data_fim = self.data_final_entry.get().strip() if hasattr(self, 'data_final_entry') else ""
+            if not data_ini or not data_fim:
+                messagebox.showerror("Erro", "Preencha a Data Inicial e Data Final.")
+                return False
 
         if self.modelo in ["ProrContrato", "ComuniCertificado", "DomBot_GMS"] and not self.excel_base:
             messagebox.showerror("Erro", "Selecione o Excel Base.")
@@ -1088,7 +1237,7 @@ class ExcelGeneratorApp:
             messagebox.showerror("Erro", "Selecione o Excel de Contato.")
             return False
 
-        if self.modelo not in ["DomBot_GMS", "ALL", "ALL_info"] and not self.excel_entrada:
+        if self.modelo not in ["DomBot_GMS", "DomBot_Econsig", "ALL", "ALL_info"] and not self.excel_entrada:
             messagebox.showerror("Erro", "Selecione o Excel de Contatos Onvio.")
             return False
 
@@ -1119,8 +1268,19 @@ class ExcelGeneratorApp:
             if not processador:
                 raise ValueError(f"Modelo {self.modelo} não encontrado.")
             
-            input_file = self.pasta_pdf if self.modelo in ["ONE", "Cobranca"] else self.excel_base
-            if self.modelo == "DomBot_GMS":
+            input_file = self.pasta_pdf if self.modelo in ["ONE", "Cobranca", "DomBot_Econsig"] else self.excel_base
+            if self.modelo == "DomBot_Econsig":
+                data_inicial = self.data_inicial_entry.get().strip() if hasattr(self, 'data_inicial_entry') else ""
+                data_final = self.data_final_entry.get().strip() if hasattr(self, 'data_final_entry') else ""
+                total_registros = processador(
+                    input_file,
+                    self.excel_saida,
+                    self.log_message,
+                    self.progress_bar.set,
+                    data_inicial=data_inicial,
+                    data_final=data_final
+                )
+            elif self.modelo == "DomBot_GMS":
                 periodo = self.periodo_entry.get().strip() if hasattr(self, 'periodo_entry') else ""
                 pasta_destino = self.pasta_destino_dombot if hasattr(self, 'pasta_destino_dombot') else ""
                 total_registros = processador(
