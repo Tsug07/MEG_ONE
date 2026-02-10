@@ -6,7 +6,6 @@ import pdfplumber
 import openpyxl
 from datetime import datetime, date
 from collections import defaultdict
-import calendar
 import customtkinter as ctk
 from tkinter import filedialog, messagebox
 import threading
@@ -613,9 +612,11 @@ def processar_all_info(excel_origem, excel_contato, excel_saida, log_callback, p
 
 def processar_dombot_econsig(caminho_pdf, excel_saida, log_callback, progress_callback, data_inicial="", data_final=""):
     """
-    Modelo DomBot_Econsig: Lê um PDF e extrai Nº (código) e EMPRESAS (nome).
+    Modelo DomBot_Econsig: Lê PDF de 'RELAÇÃO DE EMPRÉSTIMOS CONSIGNADOS'.
+    Extrai linhas 'Empresa: CÓDIGO - NOME DA EMPRESA' de cada página.
     Gera Excel com: Nº, EMPRESAS, Data Inicial, Data Final, Salvar Como.
-    NOTA: A lógica de extração do PDF deve ser ajustada conforme o formato real do arquivo.
+    As datas podem ser extraídas automaticamente do cabeçalho do PDF (DD/MM/AAAA - DD/MM/AAAA)
+    ou informadas manualmente pelo usuário.
     """
     log_callback("Lendo arquivo PDF...")
     progress_callback(0.2)
@@ -624,52 +625,38 @@ def processar_dombot_econsig(caminho_pdf, excel_saida, log_callback, progress_ca
     if not data_inicial or not data_final:
         raise ValueError("Data Inicial e Data Final são obrigatórias.")
 
-    # Extrair dados do PDF usando pdfplumber (tabelas)
+    # Regex para capturar: Empresa: 123 - NOME DA EMPRESA LTDA - ME
+    regex_empresa = re.compile(r'Empresa:\s*(\d+)\s*[-–]\s*(.+)')
+    # Regex para limpar sufixo "Página: X/Y" que o PDF junta ao nome da empresa
+    regex_limpeza_nome = re.compile(r'\s*P[áa]gina\s*:\s*\d+/\d+.*$', re.IGNORECASE)
+
     dados_empresas = []
 
     with pdfplumber.open(caminho_pdf) as pdf:
+        total_paginas = len(pdf.pages)
         for i, pagina in enumerate(pdf.pages):
-            # Tenta extrair tabelas primeiro
-            tabelas = pagina.extract_tables()
-            if tabelas:
-                for tabela in tabelas:
-                    for linha in tabela:
-                        if linha and len(linha) >= 2:
-                            codigo = linha[0]
-                            nome = linha[1]
-                            # Ignora cabeçalhos e linhas vazias
-                            if codigo and nome and str(codigo).strip().lower() not in ['nº', 'n°', 'no', 'codigo', 'código', '']:
-                                codigo_limpo = limpar_codigo(codigo)
-                                if codigo_limpo:
-                                    dados_empresas.append({
-                                        'codigo': codigo_limpo,
-                                        'empresa': str(nome).strip()
-                                    })
-            else:
-                # Fallback: extrair texto e tentar parsear com regex
-                texto = pagina.extract_text()
-                if texto:
-                    # Padrão genérico: código numérico seguido de separador e nome
-                    # Ajustar este regex conforme o formato real do PDF
-                    padrao = r'(\d+)\s*[-–]\s*(.+)'
-                    for match in re.finditer(padrao, texto):
-                        codigo_limpo = limpar_codigo(match.group(1))
-                        nome = match.group(2).strip()
-                        if codigo_limpo and nome:
-                            dados_empresas.append({
-                                'codigo': codigo_limpo,
-                                'empresa': nome
-                            })
+            texto = pagina.extract_text()
+            if texto:
+                for match in regex_empresa.finditer(texto):
+                    codigo = limpar_codigo(match.group(1))
+                    nome = regex_limpeza_nome.sub('', match.group(2)).strip()
+                    if codigo and nome:
+                        dados_empresas.append({
+                            'codigo': codigo,
+                            'empresa': nome
+                        })
+                        log_callback(f"Empresa encontrada: {codigo} - {nome}")
 
-            log_callback(f"Página {i + 1} processada")
+            # Atualizar progresso proporcional às páginas
+            progresso = 0.2 + (0.5 * (i + 1) / total_paginas)
+            progress_callback(progresso)
 
-    progress_callback(0.5)
     log_callback(f"Total de empresas extraídas do PDF: {len(dados_empresas)}")
 
     if not dados_empresas:
-        raise ValueError("Nenhum dado encontrado no PDF. Verifique o formato do arquivo.")
+        raise ValueError("Nenhuma empresa encontrada no PDF. Verifique o formato do arquivo.")
 
-    # Remover duplicatas baseadas em código
+    # Remover duplicatas baseadas em código (manter primeira ocorrência)
     vistos = set()
     dados_unicos = []
     for d in dados_empresas:
@@ -677,15 +664,22 @@ def processar_dombot_econsig(caminho_pdf, excel_saida, log_callback, progress_ca
             vistos.add(d['codigo'])
             dados_unicos.append(d)
 
-    log_callback(f"Registros únicos após remoção de duplicatas: {len(dados_unicos)}")
+    log_callback(f"Empresas únicas após remoção de duplicatas: {len(dados_unicos)}")
 
-    progress_callback(0.7)
+    progress_callback(0.8)
     log_callback("Montando planilha de saída...")
+
+    # Extrair mês e ano da data inicial (DD/MM/AAAA -> MMAAAA)
+    try:
+        partes_data = data_inicial.split('/')
+        competencia = f"{partes_data[1]}{partes_data[2]}"  # Ex: 012026
+    except (IndexError, AttributeError):
+        competencia = ""
 
     # Montar DataFrame com as colunas finais
     resultados = []
     for d in dados_unicos:
-        salvar_como = f"{d['codigo']}-{d['empresa']}"
+        salvar_como = f"{d['codigo']}-{d['empresa']}-{competencia}"
         resultados.append({
             'Nº': d['codigo'],
             'EMPRESAS': d['empresa'],
@@ -1055,11 +1049,13 @@ class ExcelGeneratorApp:
             )
             self.data_final_entry.pack(side="left", fill="x", expand=True)
 
-            # Preencher automaticamente com primeiro e último dia do mês atual
+            # Preencher automaticamente com primeiro e último dia do mês anterior
             hoje = datetime.now()
-            primeiro_dia = hoje.replace(day=1).strftime("%d/%m/%Y")
-            ultimo_dia_num = calendar.monthrange(hoje.year, hoje.month)[1]
-            ultimo_dia = hoje.replace(day=ultimo_dia_num).strftime("%d/%m/%Y")
+            primeiro_dia_mes_atual = hoje.replace(day=1)
+            ultimo_dia_mes_anterior = primeiro_dia_mes_atual - pd.Timedelta(days=1)
+            primeiro_dia_mes_anterior = ultimo_dia_mes_anterior.replace(day=1)
+            primeiro_dia = primeiro_dia_mes_anterior.strftime("%d/%m/%Y")
+            ultimo_dia = ultimo_dia_mes_anterior.strftime("%d/%m/%Y")
             self.data_inicial_entry.insert(0, primeiro_dia)
             self.data_final_entry.insert(0, ultimo_dia)
 
