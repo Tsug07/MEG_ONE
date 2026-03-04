@@ -184,58 +184,52 @@ def processar_cobranca(caminho_pdf, excel_entrada, excel_saida, log_callback, pr
     log_callback(f"Arquivo Excel gerado com sucesso: {excel_saida}")
     return len(linhas)
 
-def processar_renovacao(excel_base, excel_entrada, excel_saida, log_callback, progress_callback):
-    contatos_dict = carregar_contatos_excel(excel_entrada)
-    log_callback("Lendo Excel Base...")
+def processar_contato(excel_base, excel_entrada, excel_saida, log_callback, progress_callback):
+    log_callback("Lendo Excel de Origem...")
     progress_callback(0.2)
+    df_origem = pd.read_excel(excel_base)
 
-    df_comparacao = pd.read_excel(excel_base)
-    codigos = df_comparacao.iloc[:, 0]
-    pessoas = df_comparacao.iloc[:, 1]
-    vencimentos = df_comparacao.iloc[:, 2]
+    log_callback("Lendo Excel de Contatos...")
+    progress_callback(0.3)
+    df_contatos = pd.read_excel(excel_entrada)
 
-    dados = {}
-    hoje = datetime.now()
+    # Renomear colunas para facilitar o trabalho
+    df_origem.columns = ['codigo_origem', 'nome_origem', 'cnpj'][:len(df_origem.columns)]
+    df_contatos.columns = ['codigo_contato', 'nome_contato', 'contato', 'grupo'][:len(df_contatos.columns)]
 
-    progress_callback(0.4)
-    log_callback("Comparando códigos e criando resultados...")
+    # Converter código para string para garantir comparação correta
+    df_origem['codigo_origem'] = df_origem['codigo_origem'].astype(str).str.strip()
+    df_contatos['codigo_contato'] = df_contatos['codigo_contato'].astype(str).str.strip()
 
-    for codigo_atual, pessoa, vencimento in zip(codigos, pessoas, vencimentos):
-        codigo_str = limpar_codigo(codigo_atual)
+    progress_callback(0.5)
+    log_callback("Comparando códigos e mesclando contatos...")
 
-        # Filtrar apenas contratos que ainda não venceram
-        if pd.isna(vencimento) or not isinstance(vencimento, (pd.Timestamp, datetime)):
-            continue
-        if vencimento < hoje:
-            continue
+    # Fazer o merge baseado no código (left join - mantém todos da origem)
+    df_merged = pd.merge(
+        df_origem,
+        df_contatos[['codigo_contato', 'contato', 'grupo']],
+        left_on='codigo_origem',
+        right_on='codigo_contato',
+        how='left'
+    )
 
-        contato_info = contatos_dict.get(codigo_str, {})
-        contato_individual = contato_info.get('contato', '')
-        contato_grupo = contato_info.get('grupo', '')
+    # Criar DataFrame final com as colunas desejadas
+    df_resultado = pd.DataFrame({
+        'Codigo': df_merged['codigo_origem'],
+        'Nome': df_merged['nome_origem'],
+        'Contato': df_merged['contato'].fillna(''),
+        'Grupo': df_merged['grupo'].fillna(''),
+        'CNPJ': df_merged['cnpj']
+    })
 
-        vencimento_str = vencimento.strftime("%d/%m/%Y")
-
-        if codigo_str not in dados:
-            dados[codigo_str] = []
-        dados[codigo_str].append({
-            'Codigo': codigo_str,
-            'Contato Onvio': contato_individual,
-            'Grupo Onvio': contato_grupo,
-            'Nome': pessoa,
-            'Vencimento': vencimento_str
-        })
-
-    linhas = []
-    for codigo, info_list in dados.items():
-        for info in info_list:
-            linhas.append(info)
+    # Ordenar por código em ordem crescente
+    df_resultado = df_resultado.sort_values(by='Codigo', key=lambda x: pd.to_numeric(x, errors='coerce')).reset_index(drop=True)
 
     progress_callback(0.8)
     log_callback("Salvando arquivo Excel de saída...")
-    df = pd.DataFrame(linhas)
-    df.to_excel(excel_saida, index=False)
+    df_resultado.to_excel(excel_saida, index=False)
     log_callback(f"Arquivo Excel gerado com sucesso: {excel_saida}")
-    return len(linhas)
+    return len(df_resultado)
 
 
 def formatar_cnpj(cnpj):
@@ -762,7 +756,7 @@ def processar_dombot(excel_base, excel_entrada, excel_saida, log_callback, progr
 processadores = {
     "ONE": processar_one,
     "Cobranca": processar_cobranca,
-    "ProrContrato": processar_renovacao,
+    "Contato": processar_contato,
     "ComuniCertificado": processar_comunicado,
     "DomBot_GMS": processar_dombot,
     "DomBot_Econsig": processar_dombot_econsig,
@@ -1221,7 +1215,7 @@ class ExcelGeneratorApp:
                 messagebox.showerror("Erro", "Preencha a Data Inicial e Data Final.")
                 return False
 
-        if self.modelo in ["ProrContrato", "ComuniCertificado", "DomBot_GMS"] and not self.excel_base:
+        if self.modelo in ["Contato", "ComuniCertificado", "DomBot_GMS"] and not self.excel_base:
             messagebox.showerror("Erro", "Selecione o Excel Base.")
             return False
 
