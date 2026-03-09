@@ -193,9 +193,11 @@ def processar_contato(excel_base, excel_entrada, excel_saida, log_callback, prog
     progress_callback(0.3)
     df_contatos = pd.read_excel(excel_entrada)
 
-    # Renomear colunas para facilitar o trabalho
-    df_origem.columns = ['codigo_origem', 'nome_origem', 'cnpj'][:len(df_origem.columns)]
-    df_contatos.columns = ['codigo_contato', 'nome_contato', 'contato', 'grupo'][:len(df_contatos.columns)]
+    # Selecionar apenas as colunas necessárias e renomear
+    df_origem = df_origem.iloc[:, :3]
+    df_origem.columns = ['codigo_origem', 'nome_origem', 'cnpj']
+    df_contatos = df_contatos.iloc[:, :4]
+    df_contatos.columns = ['codigo_contato', 'nome_contato', 'contato', 'grupo']
 
     # Converter código para string para garantir comparação correta
     df_origem['codigo_origem'] = df_origem['codigo_origem'].astype(str).str.strip()
@@ -219,8 +221,11 @@ def processar_contato(excel_base, excel_entrada, excel_saida, log_callback, prog
         'Nome': df_merged['nome_origem'],
         'Contato': df_merged['contato'].fillna(''),
         'Grupo': df_merged['grupo'].fillna(''),
-        'CNPJ': df_merged['cnpj']
+        'CNPJ': df_merged['cnpj'].apply(formatar_cnpj)
     })
+
+    # Remover duplicatas baseadas no código
+    df_resultado = df_resultado.drop_duplicates(subset=['Codigo'])
 
     # Ordenar por código em ordem crescente
     df_resultado = df_resultado.sort_values(by='Codigo', key=lambda x: pd.to_numeric(x, errors='coerce')).reset_index(drop=True)
@@ -233,14 +238,21 @@ def processar_contato(excel_base, excel_entrada, excel_saida, log_callback, prog
 
 
 def formatar_cnpj(cnpj):
-    cnpj_str = re.sub(r'\D', '', str(cnpj))
-    if cnpj_str.endswith('.0'):
-        cnpj_str = cnpj_str[:-2]
-    if len(cnpj_str) == 13:
-        cnpj_str = '0' + cnpj_str
-    elif len(cnpj_str) == 12:
-        cnpj_str = '00' + cnpj_str
-    return cnpj_str.zfill(14)
+    if cnpj is None or pd.isna(cnpj):
+        return ''
+    # Converter float para int antes de string (remove .0)
+    cnpj_str = str(cnpj)
+    if '.' in cnpj_str:
+        try:
+            cnpj_str = str(int(float(cnpj_str)))
+        except:
+            pass
+    cnpj_str = re.sub(r'\D', '', cnpj_str)
+    # CPF: até 11 dígitos / CNPJ: mais de 11 dígitos
+    if len(cnpj_str) <= 11:
+        return cnpj_str.zfill(11)
+    else:
+        return cnpj_str.zfill(14)
 
 def verifica_certificado_comunicado(data_vencimento):
     hoje = datetime.today()
@@ -699,8 +711,9 @@ def processar_dombot(excel_base, excel_entrada, excel_saida, log_callback, progr
     # Ler o Excel base, sheet específica
     df = pd.read_excel(excel_base)
 
-    # Renomear colunas para padronização
-    df.columns = ['Nº', 'EMPRESAS', 'Tarefa']  # Ignorar a terceira coluna
+    # Renomear colunas para padronização (usar só as 3 primeiras)
+    df = df.iloc[:, :3]
+    df.columns = ['Nº', 'EMPRESAS', 'Tarefa']
 
     # Converter 'Nº' para string e limpar
     df['Nº'] = df['Nº'].apply(limpar_codigo)
