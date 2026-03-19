@@ -616,6 +616,128 @@ def processar_all_info(excel_origem, excel_contato, excel_saida, log_callback, p
     return len(resultados)
 
 
+def processar_dombot_admiss(caminho_xls, excel_contatos, excel_saida, log_callback, progress_callback):
+    """
+    Modelo DomBot_Admiss: Lê XLS de 'RELAÇÃO DE EMPREGADOS I' (admissões).
+    Estrutura do XLS (colunas por índice):
+      Col 0: Nome da empresa (nas linhas de cabeçalho) / Código do funcionário (nas linhas de dados)
+      Col 3: Nome do funcionário
+      Col 9: Cargo
+      Col 14: Categoria (Mensalista, etc.)
+      Col 23: Data de admissão
+    Cruza o nome da empresa com o Excel de Contatos para obter o código da empresa.
+    Gera Excel com: Nº (código empresa), EMPRESAS, Cod.Funcionário, Funcionário, Tipo de Contrato (em branco).
+    """
+    log_callback("Lendo arquivo XLS de empregados...")
+    progress_callback(0.2)
+
+    # Carregar contatos para cruzar nome da empresa → código
+    log_callback("Carregando Excel de Contatos para cruzamento...")
+    contatos_dict = carregar_contatos_excel(excel_contatos)
+
+    # Montar dicionário invertido: nome_normalizado → código
+    nome_para_codigo = {}
+    for codigo, info in contatos_dict.items():
+        nome_norm = normalizar_nome(info['empresa'])
+        if nome_norm:
+            nome_para_codigo[nome_norm] = codigo
+
+    # Ler o XLS com calamine (suporta .xls antigo)
+    df_raw = pd.read_excel(caminho_xls, header=None, engine='calamine')
+    total_linhas = len(df_raw)
+    log_callback(f"Arquivo lido: {total_linhas} linhas, {len(df_raw.columns)} colunas")
+
+    progress_callback(0.4)
+
+    dados = []
+    empresa_atual = None
+
+    for idx, row in df_raw.iterrows():
+        col0 = row.iloc[0] if not pd.isna(row.iloc[0]) else None
+        col3 = row.iloc[3] if len(row) > 3 and not pd.isna(row.iloc[3]) else None
+        col9 = row.iloc[9] if len(row) > 9 and not pd.isna(row.iloc[9]) else None
+        col14 = row.iloc[14] if len(row) > 14 and not pd.isna(row.iloc[14]) else None
+
+        # Detectar linha de empresa: col0 tem texto (não numérico) e col3 é vazio
+        # Empresas aparecem como "AB3 PRODUCOES E SERVICOS LTDA" na col0, sem dados nas outras colunas de dados
+        if col0 is not None and col3 is None:
+            col0_str = str(col0).strip()
+            # Ignorar linhas de rodapé/legenda
+            if any(col0_str.startswith(ign) for ign in ['Hor.', 'NF', 'ND', 'SIN', 'OPT', 'Sistema licenciado']):
+                continue
+            # Ignorar linhas de cabeçalho (Código)
+            if col0_str.startswith('C') and 'digo' in col0_str:
+                continue
+            # Se col0 é texto (não numérico), é nome de empresa
+            try:
+                float(col0_str)
+            except ValueError:
+                if len(col0_str) > 3:
+                    empresa_atual = col0_str
+                    log_callback(f"Empresa encontrada: {empresa_atual}")
+                continue
+
+        # Detectar linha de funcionário: col0 é numérico (código func) e col3 tem nome
+        if col0 is not None and col3 is not None and empresa_atual:
+            try:
+                cod_func = str(int(float(str(col0))))
+            except (ValueError, TypeError):
+                continue
+
+            nome_func = str(col3).strip()
+            if not nome_func or nome_func.lower() in ['nome', 'nan']:
+                continue
+
+            # Cruzar empresa com contatos para obter código
+            empresa_norm = normalizar_nome(empresa_atual)
+            codigo_empresa = nome_para_codigo.get(empresa_norm, "")
+
+            # Se não encontrou exato, tentar similaridade
+            if not codigo_empresa:
+                melhor_sim = 0
+                melhor_codigo = ""
+                for nome_contato, cod in nome_para_codigo.items():
+                    sim = calcular_similaridade(empresa_norm, nome_contato)
+                    if sim > melhor_sim:
+                        melhor_sim = sim
+                        melhor_codigo = cod
+                if melhor_sim >= 0.8:
+                    codigo_empresa = melhor_codigo
+                    log_callback(f"🔍 Match por similaridade ({melhor_sim:.0%}): {empresa_atual} → Código {codigo_empresa}")
+                else:
+                    log_callback(f"⚠️ Empresa sem match no Contatos: {empresa_atual}")
+
+            documento = f"{codigo_empresa} - {nome_func}" if codigo_empresa else nome_func
+            dados.append({
+                'Nº': codigo_empresa,
+                'EMPRESAS': empresa_atual,
+                'Cod.Funcionário': cod_func,
+                'Funcionário': nome_func,
+                'Tipo de Contrato': '',
+                'Documento': documento
+            })
+            log_callback(f"Funcionário: {cod_func} - {nome_func} | Empresa: {empresa_atual}")
+
+        # Atualizar progresso
+        if idx % 10 == 0:
+            progresso = 0.4 + (0.4 * idx / total_linhas)
+            progress_callback(progresso)
+
+    log_callback(f"Total de registros extraídos: {len(dados)}")
+
+    if not dados:
+        raise ValueError("Nenhum dado encontrado no arquivo. Verifique o formato.")
+
+    progress_callback(0.9)
+    log_callback("Montando e salvando planilha de saída...")
+
+    df = pd.DataFrame(dados)
+    df.to_excel(excel_saida, index=False)
+    log_callback(f"Arquivo Excel gerado com sucesso: {excel_saida}")
+    progress_callback(1.0)
+    return len(dados)
+
+
 def processar_dombot_econsig(caminho_pdf, excel_saida, log_callback, progress_callback, data_inicial="", data_final=""):
     """
     Modelo DomBot_Econsig: Lê PDF de 'RELAÇÃO DE EMPRÉSTIMOS CONSIGNADOS'.
@@ -773,6 +895,7 @@ processadores = {
     "ComuniCertificado": processar_comunicado,
     "DomBot_GMS": processar_dombot,
     "DomBot_Econsig": processar_dombot_econsig,
+    "DomBot_Admiss": processar_dombot_admiss,
     "ALL": processar_all,
     "ALL_info": processar_all_info
 }
@@ -1228,7 +1351,7 @@ class ExcelGeneratorApp:
                 messagebox.showerror("Erro", "Preencha a Data Inicial e Data Final.")
                 return False
 
-        if self.modelo in ["Contato", "ComuniCertificado", "DomBot_GMS"] and not self.excel_base:
+        if self.modelo in ["Contato", "ComuniCertificado", "DomBot_GMS", "DomBot_Admiss"] and not self.excel_base:
             messagebox.showerror("Erro", "Selecione o Excel Base.")
             return False
 
@@ -1272,7 +1395,15 @@ class ExcelGeneratorApp:
                 raise ValueError(f"Modelo {self.modelo} não encontrado.")
             
             input_file = self.pasta_pdf if self.modelo in ["ONE", "Cobranca", "DomBot_Econsig"] else self.excel_base
-            if self.modelo == "DomBot_Econsig":
+            if self.modelo == "DomBot_Admiss":
+                total_registros = processador(
+                    input_file,
+                    self.excel_entrada,
+                    self.excel_saida,
+                    self.log_message,
+                    self.progress_bar.set
+                )
+            elif self.modelo == "DomBot_Econsig":
                 data_inicial = self.data_inicial_entry.get().strip() if hasattr(self, 'data_inicial_entry') else ""
                 data_final = self.data_final_entry.get().strip() if hasattr(self, 'data_final_entry') else ""
                 total_registros = processador(
