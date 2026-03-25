@@ -1,6 +1,9 @@
 import os
 import re
 import sys
+import io
+import csv
+import urllib.request
 import pandas as pd
 import pdfplumber
 import openpyxl
@@ -616,33 +619,119 @@ def processar_all_info(excel_origem, excel_contato, excel_saida, log_callback, p
     return len(resultados)
 
 
-def processar_dombot_admiss(caminho_xls, excel_contatos, excel_saida, log_callback, progress_callback):
+# URL do Google Sheets de Contatos (exportação CSV)
+SHEETS_CONTATOS_URL = "https://docs.google.com/spreadsheets/d/146s-OVfNk89qoSpMFQtPyLq01UOQjQL8H0Ds-9UJNpw/export?format=csv"
+
+
+def baixar_contatos_sheets(log_callback=None):
     """
-    Modelo DomBot_Admiss: Lê XLS de 'RELAÇÃO DE EMPREGADOS I' (admissões).
-    Estrutura do XLS (colunas por índice):
-      Col 0: Nome da empresa (nas linhas de cabeçalho) / Código do funcionário (nas linhas de dados)
-      Col 3: Nome do funcionário
-      Col 9: Cargo
-      Col 14: Categoria (Mensalista, etc.)
-      Col 23: Data de admissão
-    Cruza o nome da empresa com o Excel de Contatos para obter o código da empresa.
-    Gera Excel com: Nº (código empresa), EMPRESAS, Cod.Funcionário, Funcionário, Tipo de Contrato (em branco).
+    Baixa o Google Sheets de contatos como CSV e retorna dicionário nome_normalizado → código.
+    Colunas do Sheets: Codigo, Empresa, Contato Onvio, Grupo Onvio, CNPJ, Telefone
     """
-    log_callback("Lendo arquivo XLS de empregados...")
+    if log_callback:
+        log_callback("Baixando planilha de contatos do Google Sheets...")
+
+    try:
+        req = urllib.request.Request(SHEETS_CONTATOS_URL, headers={'User-Agent': 'Mozilla/5.0'})
+        with urllib.request.urlopen(req, timeout=30) as response:
+            csv_data = response.read().decode('utf-8')
+    except Exception as e:
+        raise ConnectionError(f"Erro ao baixar Google Sheets: {e}")
+
+    nome_para_codigo = {}
+    reader = csv.DictReader(io.StringIO(csv_data))
+    for row in reader:
+        codigo = str(row.get('Codigo', '')).strip()
+        empresa = str(row.get('Empresa', '')).strip()
+        if codigo and empresa:
+            nome_norm = normalizar_nome(empresa)
+            if nome_norm:
+                nome_para_codigo[nome_norm] = codigo
+
+    if log_callback:
+        log_callback(f"Contatos carregados: {len(nome_para_codigo)} empresas mapeadas")
+
+    return nome_para_codigo
+
+
+def extrair_funcionarios_contrato(caminho_contrato_xls, log_callback=None):
+    """
+    Lê o XLS de 'Contrato por Prazo Determinado' e extrai um set de (empresa_nome_norm, cod_funcionario).
+    Também retorna um dicionário empresa_nome_norm → código da empresa (extraído do header).
+    Estrutura:
+      Linha 'Empresa:' → Col 4: "511 - NEREIDAS IT SERVICES LTDA"
+      Linhas de dados  → Col 0: código funcionário, Col 2: nome funcionário
+    """
+    df_raw = pd.read_excel(caminho_contrato_xls, header=None, engine='calamine')
+
+    funcionarios_experiencia = set()  # (empresa_nome_norm, cod_funcionario)
+    empresa_codigos = {}  # empresa_nome_norm → código
+    empresa_atual_nome = None
+    empresa_atual_codigo = None
+
+    for idx, row in df_raw.iterrows():
+        col0 = row.iloc[0] if not pd.isna(row.iloc[0]) else None
+        col4 = row.iloc[4] if len(row) > 4 and not pd.isna(row.iloc[4]) else None
+
+        # Detectar linha "Empresa:" → extrair código e nome
+        if col0 is not None and str(col0).strip() == 'Empresa:' and col4 is not None:
+            texto_empresa = str(col4).strip()
+            # Formato: "511 - NEREIDAS IT SERVICES LTDA"
+            match = re.match(r'^(\d+)\s*-\s*(.+)$', texto_empresa)
+            if match:
+                empresa_atual_codigo = match.group(1).strip()
+                empresa_atual_nome = normalizar_nome(match.group(2).strip())
+                empresa_codigos[empresa_atual_nome] = empresa_atual_codigo
+                if log_callback:
+                    log_callback(f"Contrato - Empresa: {match.group(2).strip()} (Cód: {empresa_atual_codigo})")
+            continue
+
+        # Detectar linha de funcionário: col0 numérico
+        if col0 is not None and empresa_atual_nome:
+            col0_str = str(col0).strip()
+            # Ignorar headers e linhas não-numéricas
+            if col0_str.startswith('C') and 'digo' in col0_str:
+                continue
+            if col0_str.startswith('Total'):
+                continue
+            try:
+                cod_func = str(int(float(col0_str)))
+                funcionarios_experiencia.add((empresa_atual_nome, cod_func))
+            except (ValueError, TypeError):
+                continue
+
+    if log_callback:
+        log_callback(f"Total funcionários em experiência: {len(funcionarios_experiencia)}")
+
+    return funcionarios_experiencia, empresa_codigos
+
+
+def processar_dombot_admiss(caminho_xls, caminho_contrato_xls, excel_saida, log_callback, progress_callback):
+    """
+    Modelo DomBot_Admiss: Lê XLS de 'RELAÇÃO DE EMPREGADOS I' (admissões) e
+    XLS de 'Contrato por Prazo Determinado' para classificar tipo de contrato.
+    Baixa o mapeamento empresa→código do Google Sheets automaticamente.
+    Gera Excel com: Nº, EMPRESAS, Cod.Funcionário, Funcionário, Tipo de Contrato, Documento.
+    """
+    log_callback("Iniciando processamento DomBot_Admiss...")
+    progress_callback(0.1)
+
+    # 1. Baixar mapeamento de contatos do Google Sheets
+    nome_para_codigo = baixar_contatos_sheets(log_callback)
     progress_callback(0.2)
 
-    # Carregar contatos para cruzar nome da empresa → código
-    log_callback("Carregando Excel de Contatos para cruzamento...")
-    contatos_dict = carregar_contatos_excel(excel_contatos)
+    # 2. Extrair funcionários em experiência do XLS de contratos
+    log_callback("Lendo arquivo de Contratos por Prazo Determinado...")
+    funcionarios_exp, empresa_codigos_contrato = extrair_funcionarios_contrato(caminho_contrato_xls, log_callback)
+    progress_callback(0.3)
 
-    # Montar dicionário invertido: nome_normalizado → código
-    nome_para_codigo = {}
-    for codigo, info in contatos_dict.items():
-        nome_norm = normalizar_nome(info['empresa'])
-        if nome_norm:
+    # Complementar mapeamento de códigos com os do contrato (para empresas que podem não estar no Sheets)
+    for nome_norm, codigo in empresa_codigos_contrato.items():
+        if nome_norm not in nome_para_codigo:
             nome_para_codigo[nome_norm] = codigo
 
-    # Ler o XLS com calamine (suporta .xls antigo)
+    # 3. Ler o XLS de empregados
+    log_callback("Lendo arquivo XLS de empregados...")
     df_raw = pd.read_excel(caminho_xls, header=None, engine='calamine')
     total_linhas = len(df_raw)
     log_callback(f"Arquivo lido: {total_linhas} linhas, {len(df_raw.columns)} colunas")
@@ -655,11 +744,8 @@ def processar_dombot_admiss(caminho_xls, excel_contatos, excel_saida, log_callba
     for idx, row in df_raw.iterrows():
         col0 = row.iloc[0] if not pd.isna(row.iloc[0]) else None
         col3 = row.iloc[3] if len(row) > 3 and not pd.isna(row.iloc[3]) else None
-        col9 = row.iloc[9] if len(row) > 9 and not pd.isna(row.iloc[9]) else None
-        col14 = row.iloc[14] if len(row) > 14 and not pd.isna(row.iloc[14]) else None
 
         # Detectar linha de empresa: col0 tem texto (não numérico) e col3 é vazio
-        # Empresas aparecem como "AB3 PRODUCOES E SERVICOS LTDA" na col0, sem dados nas outras colunas de dados
         if col0 is not None and col3 is None:
             col0_str = str(col0).strip()
             # Ignorar linhas de rodapé/legenda
@@ -703,9 +789,12 @@ def processar_dombot_admiss(caminho_xls, excel_contatos, excel_saida, log_callba
                         melhor_codigo = cod
                 if melhor_sim >= 0.8:
                     codigo_empresa = melhor_codigo
-                    log_callback(f"🔍 Match por similaridade ({melhor_sim:.0%}): {empresa_atual} → Código {codigo_empresa}")
+                    log_callback(f"Match por similaridade ({melhor_sim:.0%}): {empresa_atual} -> Código {codigo_empresa}")
                 else:
-                    log_callback(f"⚠️ Empresa sem match no Contatos: {empresa_atual}")
+                    log_callback(f"Empresa sem match no Contatos: {empresa_atual}")
+
+            # Determinar tipo de contrato (E = Experiência, I = Indeterminado)
+            tipo_contrato = "E" if (empresa_norm, cod_func) in funcionarios_exp else "I"
 
             documento = f"{codigo_empresa} - {nome_func}" if codigo_empresa else nome_func
             dados.append({
@@ -713,10 +802,10 @@ def processar_dombot_admiss(caminho_xls, excel_contatos, excel_saida, log_callba
                 'EMPRESAS': empresa_atual,
                 'Cod.Funcionário': cod_func,
                 'Funcionário': nome_func,
-                'Tipo de Contrato': '',
+                'Tipo de Contrato': tipo_contrato,
                 'Documento': documento
             })
-            log_callback(f"Funcionário: {cod_func} - {nome_func} | Empresa: {empresa_atual}")
+            log_callback(f"Funcionário: {cod_func} - {nome_func} | {tipo_contrato} | Empresa: {empresa_atual}")
 
         # Atualizar progresso
         if idx % 10 == 0:
@@ -1130,6 +1219,20 @@ class ExcelGeneratorApp:
                 "Selecionar",
                 self.select_excel_base
             )
+        elif choice == "DomBot_Admiss":
+            # DomBot_Admiss: XLS Empregados + XLS Contrato Experiência
+            self.excel_base_entry = self.create_compact_field(
+                self.inputs_frame,
+                "📊 XLS Empregados:",
+                "Selecionar",
+                self.select_excel_base
+            )
+            self.input_entry = self.create_compact_field(
+                self.inputs_frame,
+                "📋 XLS Contrato Exp.:",
+                "Selecionar",
+                self.select_input_excel
+            )
         else:
             self.excel_base_entry = self.create_compact_field(
                 self.inputs_frame,
@@ -1231,8 +1334,8 @@ class ExcelGeneratorApp:
                 "Selecionar",
                 self.select_input_excel
             )
-        elif choice != "DomBot_Econsig":
-            # Campo normal de Contatos Onvio para outros modelos (exceto DomBot_Econsig que não usa)
+        elif choice not in ["DomBot_Econsig", "DomBot_Admiss"]:
+            # Campo normal de Contatos Onvio para outros modelos (exceto DomBot_Econsig e DomBot_Admiss que não usam)
             self.input_entry = self.create_compact_field(
                 self.inputs_frame,
                 "📋 Contatos Onvio:",
@@ -1352,7 +1455,12 @@ class ExcelGeneratorApp:
                 return False
 
         if self.modelo in ["Contato", "ComuniCertificado", "DomBot_GMS", "DomBot_Admiss"] and not self.excel_base:
-            messagebox.showerror("Erro", "Selecione o Excel Base.")
+            erro_msg = "Selecione o XLS de Empregados." if self.modelo == "DomBot_Admiss" else "Selecione o Excel Base."
+            messagebox.showerror("Erro", erro_msg)
+            return False
+
+        if self.modelo == "DomBot_Admiss" and not self.excel_entrada:
+            messagebox.showerror("Erro", "Selecione o XLS de Contrato por Prazo Determinado.")
             return False
 
         if self.modelo in ["ALL", "ALL_info"] and not self.excel_base:
@@ -1363,7 +1471,7 @@ class ExcelGeneratorApp:
             messagebox.showerror("Erro", "Selecione o Excel de Contato.")
             return False
 
-        if self.modelo not in ["DomBot_GMS", "DomBot_Econsig", "ALL", "ALL_info"] and not self.excel_entrada:
+        if self.modelo not in ["DomBot_GMS", "DomBot_Econsig", "DomBot_Admiss", "ALL", "ALL_info"] and not self.excel_entrada:
             messagebox.showerror("Erro", "Selecione o Excel de Contatos Onvio.")
             return False
 

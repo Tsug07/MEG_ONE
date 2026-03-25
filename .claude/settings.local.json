@@ -3,7 +3,8 @@
     "allow": [
       "Bash(python:*)",
       "Bash(python -c \":*)",
-      "Bash(pip install:*)"
+      "Bash(pip install:*)",
+      "Bash(curl -sL \"https://docs.google.com/spreadsheets/d/146s-OVfNk89qoSpMFQtPyLq01UOQjQL8H0Ds-9UJNpw/export?format=csv\")"
     ]
   }
 }
