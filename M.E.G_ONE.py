@@ -706,7 +706,7 @@ def extrair_funcionarios_contrato(caminho_contrato_xls, log_callback=None):
     return funcionarios_experiencia, empresa_codigos
 
 
-def processar_dombot_admiss(caminho_xls, caminho_contrato_xls, excel_saida, log_callback, progress_callback):
+def processar_dombot_admiss(caminho_xls, caminho_contrato_xls, excel_saida, log_callback, progress_callback, pasta_destino=""):
     """
     Modelo DomBot_Admiss: Lê XLS de 'RELAÇÃO DE EMPREGADOS I' (admissões) e
     XLS de 'Contrato por Prazo Determinado' para classificar tipo de contrato.
@@ -796,7 +796,8 @@ def processar_dombot_admiss(caminho_xls, caminho_contrato_xls, excel_saida, log_
             # Determinar tipo de contrato (E = Experiência, I = Indeterminado)
             tipo_contrato = "E" if (empresa_norm, cod_func) in funcionarios_exp else "I"
 
-            documento = f"{codigo_empresa} - {nome_func}" if codigo_empresa else nome_func
+            nome_arquivo = f"{codigo_empresa} - {nome_func}" if codigo_empresa else nome_func
+            documento = os.path.join(pasta_destino, nome_arquivo) if pasta_destino else nome_arquivo
             dados.append({
                 'Nº': codigo_empresa,
                 'EMPRESAS': empresa_atual,
@@ -827,7 +828,7 @@ def processar_dombot_admiss(caminho_xls, caminho_contrato_xls, excel_saida, log_
     return len(dados)
 
 
-def processar_dombot_econsig(caminho_pdf, excel_saida, log_callback, progress_callback, data_inicial="", data_final=""):
+def processar_dombot_econsig(caminho_pdf, excel_saida, log_callback, progress_callback, data_inicial="", data_final="", pasta_destino=""):
     """
     Modelo DomBot_Econsig: Lê PDF de 'RELAÇÃO DE EMPRÉSTIMOS CONSIGNADOS'.
     Extrai linhas 'Empresa: CÓDIGO - NOME DA EMPRESA' de cada página.
@@ -896,7 +897,8 @@ def processar_dombot_econsig(caminho_pdf, excel_saida, log_callback, progress_ca
     # Montar DataFrame com as colunas finais
     resultados = []
     for d in dados_unicos:
-        salvar_como = f"{d['codigo']}-{d['empresa']}-{competencia}"
+        nome_arquivo = f"{d['codigo']}-{d['empresa']}-{competencia}"
+        salvar_como = os.path.join(pasta_destino, nome_arquivo) if pasta_destino else nome_arquivo
         resultados.append({
             'Nº': d['codigo'],
             'EMPRESAS': d['empresa'],
@@ -1220,7 +1222,7 @@ class ExcelGeneratorApp:
                 self.select_excel_base
             )
         elif choice == "DomBot_Admiss":
-            # DomBot_Admiss: XLS Empregados + XLS Contrato Experiência
+            # DomBot_Admiss: XLS Empregados + XLS Contrato Experiência + Pasta Destino
             self.excel_base_entry = self.create_compact_field(
                 self.inputs_frame,
                 "📊 XLS Empregados:",
@@ -1233,6 +1235,13 @@ class ExcelGeneratorApp:
                 "Selecionar",
                 self.select_input_excel
             )
+            self.pasta_docs_admiss_entry = self.create_compact_field(
+                self.inputs_frame,
+                "📁 Pasta Documentos:",
+                "Selecionar",
+                self.select_pasta_docs_admiss
+            )
+            self.pasta_docs_admiss = ""
         else:
             self.excel_base_entry = self.create_compact_field(
                 self.inputs_frame,
@@ -1292,6 +1301,15 @@ class ExcelGeneratorApp:
             self.data_inicial_entry.insert(0, primeiro_dia)
             self.data_final_entry.insert(0, ultimo_dia)
 
+            # Campo Pasta Documentos para compor caminho na coluna Salvar Como
+            self.pasta_docs_econsig_entry = self.create_compact_field(
+                self.inputs_frame,
+                "📁 Pasta Documentos:",
+                "Selecionar",
+                self.select_pasta_docs_econsig
+            )
+            self.pasta_docs_econsig = ""
+
         elif choice == "DomBot_GMS":
             # Campo para Período em vez de Contatos Onvio
             periodo_frame = ctk.CTkFrame(self.inputs_frame, fg_color="transparent")
@@ -1314,10 +1332,10 @@ class ExcelGeneratorApp:
             )
             self.periodo_entry.pack(side="left", fill="x", expand=True)
 
-            # Campo para Pasta de Destino dos PDFs
+            # Campo para Pasta de Documentos (caminho usado na coluna Caminho)
             self.pasta_destino_entry = self.create_compact_field(
                 self.inputs_frame,
-                "📂 Pasta Destino:",
+                "📁 Pasta Documentos:",
                 "Selecionar",
                 self.select_pasta_destino
             )
@@ -1424,7 +1442,27 @@ class ExcelGeneratorApp:
             self.pasta_destino_entry.delete(0, "end")
             self.pasta_destino_entry.insert(0, folder)
             self.log_message(f"📂 Pasta destino: {folder}")
-    
+
+    def select_pasta_docs_admiss(self):
+        """Seleciona a pasta que será usada como caminho na coluna Documento do DomBot_Admiss"""
+        folder = filedialog.askdirectory(title="Selecionar pasta onde os documentos serão salvos")
+        if folder:
+            folder = folder.replace("/", "\\")
+            self.pasta_docs_admiss = folder
+            self.pasta_docs_admiss_entry.delete(0, "end")
+            self.pasta_docs_admiss_entry.insert(0, folder)
+            self.log_message(f"📁 Pasta documentos Admiss: {folder}")
+
+    def select_pasta_docs_econsig(self):
+        """Seleciona a pasta que será usada como caminho na coluna Salvar Como do DomBot_Econsig"""
+        folder = filedialog.askdirectory(title="Selecionar pasta onde os documentos serão salvos")
+        if folder:
+            folder = folder.replace("/", "\\")
+            self.pasta_docs_econsig = folder
+            self.pasta_docs_econsig_entry.delete(0, "end")
+            self.pasta_docs_econsig_entry.insert(0, folder)
+            self.log_message(f"📁 Pasta documentos Econsig: {folder}")
+
     def log_message(self, message):
         """Adiciona mensagem ao log"""
         timestamp = datetime.now().strftime("%H:%M:%S")
@@ -1504,23 +1542,27 @@ class ExcelGeneratorApp:
             
             input_file = self.pasta_pdf if self.modelo in ["ONE", "Cobranca", "DomBot_Econsig"] else self.excel_base
             if self.modelo == "DomBot_Admiss":
+                pasta_docs = self.pasta_docs_admiss if hasattr(self, 'pasta_docs_admiss') else ""
                 total_registros = processador(
                     input_file,
                     self.excel_entrada,
                     self.excel_saida,
                     self.log_message,
-                    self.progress_bar.set
+                    self.progress_bar.set,
+                    pasta_destino=pasta_docs
                 )
             elif self.modelo == "DomBot_Econsig":
                 data_inicial = self.data_inicial_entry.get().strip() if hasattr(self, 'data_inicial_entry') else ""
                 data_final = self.data_final_entry.get().strip() if hasattr(self, 'data_final_entry') else ""
+                pasta_docs = self.pasta_docs_econsig if hasattr(self, 'pasta_docs_econsig') else ""
                 total_registros = processador(
                     input_file,
                     self.excel_saida,
                     self.log_message,
                     self.progress_bar.set,
                     data_inicial=data_inicial,
-                    data_final=data_final
+                    data_final=data_final,
+                    pasta_destino=pasta_docs
                 )
             elif self.modelo == "DomBot_GMS":
                 periodo = self.periodo_entry.get().strip() if hasattr(self, 'periodo_entry') else ""
