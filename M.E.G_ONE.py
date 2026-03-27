@@ -192,15 +192,44 @@ def processar_contato(excel_base, excel_entrada, excel_saida, log_callback, prog
     progress_callback(0.2)
     df_origem = pd.read_excel(excel_base)
 
+    # Ler CNPJ direto com openpyxl para preservar valor exato (evita perda de precisão por float)
+    wb = openpyxl.load_workbook(excel_base, data_only=True)
+    ws = wb.active
+    cnpj_list = []
+    for row in ws.iter_rows(min_row=2, min_col=3, max_col=3):
+        cell = row[0]
+        if cell.value is not None:
+            if isinstance(cell.value, str):
+                cnpj_list.append(cell.value.strip())
+            else:
+                cnpj_list.append(str(int(cell.value)))
+        else:
+            cnpj_list.append('')
+    wb.close()
+
     log_callback("Lendo Excel de Contatos...")
     progress_callback(0.3)
     df_contatos = pd.read_excel(excel_entrada)
 
-    # Selecionar apenas as colunas necessárias e renomear
+    # Selecionar colunas da origem (3 primeiras: código, nome, cnpj)
     df_origem = df_origem.iloc[:, :3]
     df_origem.columns = ['codigo_origem', 'nome_origem', 'cnpj']
-    df_contatos = df_contatos.iloc[:, :4]
-    df_contatos.columns = ['codigo_contato', 'nome_contato', 'contato', 'grupo']
+    # Substituir coluna cnpj pelos valores lidos com openpyxl
+    df_origem['cnpj'] = cnpj_list[:len(df_origem)]
+
+    # Pegar todas as colunas do Excel de contatos
+    num_cols_contato = df_contatos.shape[1]
+    if num_cols_contato < 4:
+        raise ValueError("O Excel de Contatos deve ter pelo menos 4 colunas (Código, Nome, Contato, Grupo).")
+
+    # Guardar nomes originais das colunas extras (a partir da 5ª, pulando a coluna E = CNPJ do contatos)
+    nomes_originais_contato = df_contatos.columns.tolist()
+    # Colunas extras = a partir da 6ª (índice 5+), pois a 5ª (índice 4) é CNPJ que virá do base
+    colunas_extras_nomes = nomes_originais_contato[5:] if num_cols_contato > 5 else []
+
+    # Renomear colunas internas para o merge
+    colunas_internas = ['codigo_contato', 'nome_contato', 'contato', 'grupo', '_cnpj_contato'] + [f'extra_{i}' for i in range(len(colunas_extras_nomes))]
+    df_contatos.columns = colunas_internas[:num_cols_contato]
 
     # Converter código para string para garantir comparação correta
     df_origem['codigo_origem'] = df_origem['codigo_origem'].astype(str).str.strip()
@@ -209,23 +238,43 @@ def processar_contato(excel_base, excel_entrada, excel_saida, log_callback, prog
     progress_callback(0.5)
     log_callback("Comparando códigos e mesclando contatos...")
 
+    # Colunas do contato a trazer no merge (contato, grupo + extras, sem _cnpj_contato)
+    colunas_merge = ['codigo_contato', 'contato', 'grupo'] + [f'extra_{i}' for i in range(len(colunas_extras_nomes))]
+
     # Fazer o merge baseado no código (left join - mantém todos da origem)
     df_merged = pd.merge(
         df_origem,
-        df_contatos[['codigo_contato', 'contato', 'grupo']],
+        df_contatos[colunas_merge],
         left_on='codigo_origem',
         right_on='codigo_contato',
         how='left'
     )
 
-    # Criar DataFrame final com as colunas desejadas
-    df_resultado = pd.DataFrame({
+    # Ler CNPJ do Excel base via openpyxl (coluna C) para preservar valor exato
+    codigo_para_cnpj = {}
+    wb_cnpj = openpyxl.load_workbook(excel_base, data_only=True)
+    ws_cnpj = wb_cnpj.active
+    for row in ws_cnpj.iter_rows(min_row=2, values_only=True):
+        if row[0] is not None:
+            cod = str(int(float(str(row[0]))))
+            cnpj_val = str(row[2]).strip() if len(row) > 2 and row[2] is not None else ''
+            codigo_para_cnpj[cod] = cnpj_val
+    wb_cnpj.close()
+
+    # Criar DataFrame final: Codigo, Nome, Contato, Grupo, CNPJ (do base), extras do contato (Telefone, etc.)
+    resultado_dict = {
         'Codigo': df_merged['codigo_origem'],
         'Nome': df_merged['nome_origem'],
         'Contato': df_merged['contato'].fillna(''),
         'Grupo': df_merged['grupo'].fillna(''),
-        'CNPJ': df_merged['cnpj'].apply(formatar_cnpj)
-    })
+        'CNPJ': df_merged['codigo_origem'].map(codigo_para_cnpj).fillna('')
+    }
+
+    # Adicionar colunas extras do contato (a partir da col F: Telefone, etc.)
+    for i, nome_col in enumerate(colunas_extras_nomes):
+        resultado_dict[nome_col] = df_merged[f'extra_{i}'].fillna('')
+
+    df_resultado = pd.DataFrame(resultado_dict)
 
     # Remover duplicatas baseadas no código
     df_resultado = df_resultado.drop_duplicates(subset=['Codigo'])
@@ -243,13 +292,8 @@ def processar_contato(excel_base, excel_entrada, excel_saida, log_callback, prog
 def formatar_cnpj(cnpj):
     if cnpj is None or pd.isna(cnpj):
         return ''
-    # Converter float para int antes de string (remove .0)
-    cnpj_str = str(cnpj)
-    if '.' in cnpj_str:
-        try:
-            cnpj_str = str(int(float(cnpj_str)))
-        except:
-            pass
+    cnpj_str = str(cnpj).strip()
+    # Se já é texto com formatação (pontos, barras, hífens), só limpa
     cnpj_str = re.sub(r'\D', '', cnpj_str)
     # CPF: até 11 dígitos / CNPJ: mais de 11 dígitos
     if len(cnpj_str) <= 11:
