@@ -750,7 +750,7 @@ def extrair_funcionarios_contrato(caminho_contrato_xls, log_callback=None):
     return funcionarios_experiencia, empresa_codigos
 
 
-def processar_dombot_admiss(caminho_xls, caminho_contrato_xls, excel_saida, log_callback, progress_callback, pasta_destino=""):
+def processar_dombot_admiss(caminho_xls, caminho_contrato_xls, excel_saida, log_callback, progress_callback, pasta_destino="", periodo=""):
     """
     Modelo DomBot_Admiss: Lê XLS de 'RELAÇÃO DE EMPREGADOS I' (admissões) e
     XLS de 'Contrato por Prazo Determinado' para classificar tipo de contrato.
@@ -840,7 +840,10 @@ def processar_dombot_admiss(caminho_xls, caminho_contrato_xls, excel_saida, log_
             # Determinar tipo de contrato (E = Experiência, I = Indeterminado)
             tipo_contrato = "E" if (empresa_norm, cod_func) in funcionarios_exp else "I"
 
-            nome_arquivo = f"{codigo_empresa} - {nome_func}" if codigo_empresa else nome_func
+            partes_nome = [codigo_empresa, nome_func] if codigo_empresa else [nome_func]
+            if periodo:
+                partes_nome.append(periodo)
+            nome_arquivo = " - ".join(partes_nome)
             documento = os.path.join(pasta_destino, nome_arquivo) if pasta_destino else nome_arquivo
             dados.append({
                 'Nº': codigo_empresa,
@@ -1279,6 +1282,29 @@ class ExcelGeneratorApp:
                 "Selecionar",
                 self.select_input_excel
             )
+            # Campo Período
+            periodo_admiss_frame = ctk.CTkFrame(self.inputs_frame, fg_color="transparent")
+            periodo_admiss_frame.pack(fill="x", pady=2)
+
+            ctk.CTkLabel(
+                periodo_admiss_frame,
+                text="📅 Período (DD.MM.AA):",
+                font=ctk.CTkFont(size=10, weight="bold"),
+                width=120,
+                anchor="w"
+            ).pack(side="left", padx=(0, 5))
+
+            self.periodo_admiss_entry = ctk.CTkEntry(
+                periodo_admiss_frame,
+                height=26,
+                font=ctk.CTkFont(size=9)
+            )
+            self.periodo_admiss_entry.pack(side="left", fill="x", expand=True)
+
+            # Preencher com dia seguinte ao atual (formato DD.MM.AA)
+            amanha = datetime.now() + pd.Timedelta(days=1)
+            self.periodo_admiss_entry.insert(0, amanha.strftime("%d.%m.%y"))
+
             self.pasta_docs_admiss_entry = self.create_compact_field(
                 self.inputs_frame,
                 "📁 Pasta Documentos:",
@@ -1587,13 +1613,18 @@ class ExcelGeneratorApp:
             input_file = self.pasta_pdf if self.modelo in ["ONE", "Cobranca", "DomBot_Econsig"] else self.excel_base
             if self.modelo == "DomBot_Admiss":
                 pasta_docs = self.pasta_docs_admiss if hasattr(self, 'pasta_docs_admiss') else ""
+                periodo_admiss = self.periodo_admiss_entry.get().strip() if hasattr(self, 'periodo_admiss_entry') else ""
+                if not periodo_admiss:
+                    amanha = datetime.now() + pd.Timedelta(days=1)
+                    periodo_admiss = amanha.strftime("%d.%m.%y")
                 total_registros = processador(
                     input_file,
                     self.excel_entrada,
                     self.excel_saida,
                     self.log_message,
                     self.progress_bar.set,
-                    pasta_destino=pasta_docs
+                    pasta_destino=pasta_docs,
+                    periodo=periodo_admiss
                 )
             elif self.modelo == "DomBot_Econsig":
                 data_inicial = self.data_inicial_entry.get().strip() if hasattr(self, 'data_inicial_entry') else ""
