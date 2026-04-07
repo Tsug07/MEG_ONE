@@ -1010,10 +1010,10 @@ def processar_dombot(excel_base, excel_entrada, excel_saida, log_callback, progr
     # Adicionar colunas
     df['Periodo'] = periodo
     df['Competencia'] = competencia
-    df['Salvar Como'] = df['Nº'] + '-' + df['EMPRESAS'] + '-' + df['Competencia']
-    df['Caminho'] = df['Salvar Como'].apply(
+    df['Salvar Como'] = (df['Nº'] + '-' + df['EMPRESAS'] + '-' + df['Competencia']).apply(
         lambda x: fr"{pasta_destino}\{x}.pdf"
     )
+    df['Caminho'] = df['Salvar Como']
 
     
     # Reordenar colunas conforme especificado
